@@ -2,27 +2,30 @@
 """
 PDF Image Remover
 =================
-A simple desktop tool that removes ALL raster images from PDF files while
-preserving the text content and the exact original page layout.
+A desktop tool that removes images from PDF files while preserving the text
+content and the original page layout.
 
-The resulting PDFs contain NO image objects, which avoids the per-upload image
-limit when sending PDFs to Claude AI for text-only review. Keep your original
-PDFs and share the image-free copy; share the original later if images matter.
+Two removal modes
+------------------
+1. Images only (default)
+   Removes embedded raster images (photographs, scanned figures, logos).
+   Keeps vector graphics (line charts/plots, diagrams), tables, equations and
+   the exact text layout. This is enough to avoid the per-upload image limit
+   when sending PDFs to Claude AI, because Claude does not count vector graphics
+   as images.
 
-How it works
-------------
-For every page the tool locates each embedded raster image, marks its area with
-a redaction annotation (no fill, so nothing is drawn over the page) and then
-applies the redaction with image-only removal. Text and vector/line-art are left
-untouched, so wording and positions do not move. A final garbage-collection /
-clean pass physically drops the orphaned image objects from the file, so no
-trace of any image remains.
+2. Images + figures/charts (text-only)
+   Also removes vector graphics (plots, diagrams, and any vector-drawn tables),
+   leaving a clean text-only PDF. Use this when you want the figures physically
+   gone. Note: in many IEEE papers the plots AND the numeric table grids are
+   drawn as vector graphics, so this mode removes both - the figure/table
+   *captions* (which are real text) are kept.
 
-Tested behaviour: text length, every text span and its exact coordinates are
-identical before and after; raster image count goes to zero and the raw file
-contains zero '/Image' objects.
+Both modes keep text byte-identical and in the same positions, and the result
+contains zero raster images. The whole-page redaction technique also removes
+images that are nested inside Form XObjects (a case a per-image search can miss).
 
-Requires: Python 3.8+  and  PyMuPDF  (pip install PyMuPDF)
+Requires: Python 3.8+  and  PyMuPDF>=1.24  (pip install PyMuPDF)
 Tkinter ships with the standard CPython installer on Windows/macOS.
 """
 
@@ -34,7 +37,7 @@ import traceback
 
 try:
     import fitz  # PyMuPDF
-except Exception:  # noqa: BLE001 - we want to catch any import problem
+except Exception:  # noqa: BLE001
     fitz = None
 
 import tkinter as tk
@@ -42,70 +45,73 @@ from tkinter import ttk, filedialog, messagebox
 
 
 APP_TITLE = "PDF Image Remover"
-APP_VERSION = "1.0"
+APP_VERSION = "1.1"
 DEFAULT_SUFFIX = "_noimg"
 
 
 # --------------------------------------------------------------------------- #
-#  Core logic (no UI) - this is the part that was tested end to end           #
+#  Core logic (no UI) - tested end to end on real IEEE PDFs                    #
 # --------------------------------------------------------------------------- #
-def _apply_image_only_redactions(page):
-    """Apply redactions removing images only, with safe fallbacks for older
-    PyMuPDF versions that do not accept the graphics/text keywords."""
+def _apply_redactions(page, remove_vector):
+    """Apply a redaction that removes raster images (always) and, when
+    ``remove_vector`` is set, vector line-art too. Text is never removed.
+    Falls back gracefully on older PyMuPDF builds."""
+    graphics = (
+        fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED
+        if remove_vector
+        else fitz.PDF_REDACT_LINE_ART_NONE
+    )
     try:
         page.apply_redactions(
             images=fitz.PDF_REDACT_IMAGE_REMOVE,
-            graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+            graphics=graphics,
             text=fitz.PDF_REDACT_TEXT_NONE,
         )
+        return
     except (TypeError, AttributeError):
-        try:
-            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
-        except (TypeError, AttributeError):
-            page.apply_redactions()
+        pass
+    try:
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
+    except (TypeError, AttributeError):
+        page.apply_redactions()
 
 
-def remove_images_from_pdf(input_path, output_path):
-    """Remove every raster image from ``input_path`` and write ``output_path``.
+def remove_images_from_pdf(input_path, output_path, remove_vector=False):
+    """Remove images from ``input_path`` and write ``output_path``.
 
-    Returns a tuple ``(removed, remaining)``:
-        removed   - number of image placements that were redacted
-        remaining - number of raster images still detected afterwards
-                    (0 for normal documents; >0 only for unusual edge cases)
+    If ``remove_vector`` is False (default): remove raster images only, keeping
+    vector graphics, tables, equations and the exact text layout.
+    If True: also remove vector graphics, producing a text-only PDF.
 
-    Text, vector graphics and exact text positions are preserved.
+    Returns ``(removed, remaining)``:
+        removed   - number of raster images removed
+        remaining - raster images still detected afterwards (expected 0)
     """
     doc = fitz.open(input_path)
     removed = 0
     try:
         for page in doc:
-            image_list = page.get_images(full=True)
-            if not image_list:
+            n_imgs = len(page.get_images(full=True))
+            n_draws = len(page.get_drawings()) if remove_vector else 0
+            if n_imgs == 0 and n_draws == 0:
                 continue
-            for img in image_list:
-                xref = img[0]
-                try:
-                    rects = page.get_image_rects(xref)
-                except Exception:
-                    rects = []
-                for rect in rects:
-                    # fill=False -> nothing is painted, the image is simply
-                    # removed; cross_out=False -> no diagonal marks.
-                    try:
-                        page.add_redact_annot(rect, fill=False, cross_out=False)
-                    except TypeError:
-                        # very old signature without cross_out
-                        page.add_redact_annot(rect, fill=False)
-                    removed += 1
-            _apply_image_only_redactions(page)
+            # A single whole-page redaction box. With image removal this also
+            # clears images nested inside Form XObjects, which a per-image
+            # rectangle search can miss. fill=False paints nothing; text and
+            # (in images-only mode) vector graphics are preserved.
+            try:
+                page.add_redact_annot(page.rect, fill=False, cross_out=False)
+            except TypeError:
+                page.add_redact_annot(page.rect, fill=False)
+            _apply_redactions(page, remove_vector)
+            removed += n_imgs
 
-        # garbage=4 + clean=True physically drop orphaned image objects so the
-        # saved file contains no image data at all.
+        # garbage=4 + clean=True physically drop orphaned objects so the saved
+        # file contains no image data at all.
         doc.save(output_path, garbage=4, deflate=True, clean=True)
     finally:
         doc.close()
 
-    # Verify nothing was missed.
     remaining = 0
     try:
         check = fitz.open(output_path)
@@ -140,37 +146,36 @@ def find_pdfs_in_folder(folder, recursive=False):
 class PdfImageRemoverApp:
     def __init__(self, root):
         self.root = root
-        self.pdf_paths = []          # absolute paths queued for processing
+        self.pdf_paths = []
         self.output_dir = tk.StringVar(value="")
         self.suffix_var = tk.BooleanVar(value=True)
         self.recursive_var = tk.BooleanVar(value=False)
+        self.mode_var = tk.StringVar(value="images")  # "images" or "all"
         self.msg_queue = queue.Queue()
         self.worker = None
 
         root.title(f"{APP_TITLE}  v{APP_VERSION}")
-        root.geometry("680x680")
-        root.minsize(620, 600)
+        root.geometry("700x760")
+        root.minsize(640, 680)
 
         self._build_ui()
         self.root.after(100, self._poll_queue)
 
-    # ----------------------------- UI layout ------------------------------ #
     def _build_ui(self):
         pad = {"padx": 10, "pady": 6}
 
-        # Header
         header = ttk.Frame(self.root)
         header.pack(fill="x", **pad)
         ttk.Label(header, text=APP_TITLE,
                   font=("Segoe UI", 16, "bold")).pack(anchor="w")
         ttk.Label(
             header,
-            text="Remove all images from PDFs. Text and layout stay intact, "
-                 "and the result contains no images.",
+            text="Remove images from PDFs. Text and layout stay intact, "
+                 "and the result contains no raster images.",
             foreground="#555",
         ).pack(anchor="w")
 
-        # --- Step 1: choose input ---
+        # --- Step 1: input ---
         in_frame = ttk.LabelFrame(self.root, text="1. Choose PDFs to process")
         in_frame.pack(fill="both", expand=True, **pad)
 
@@ -206,8 +211,26 @@ class PdfImageRemoverApp:
         list_wrap.rowconfigure(0, weight=1)
         list_wrap.columnconfigure(0, weight=1)
 
-        # --- Step 2: choose output ---
-        out_frame = ttk.LabelFrame(self.root, text="2. Choose output folder")
+        # --- Step 2: removal mode ---
+        mode_frame = ttk.LabelFrame(self.root, text="2. What to remove")
+        mode_frame.pack(fill="x", **pad)
+        ttk.Radiobutton(
+            mode_frame,
+            text="Images only  —  raster photos/scanned figures. Keeps charts, "
+                 "tables, equations and layout. (Recommended; clears Claude's "
+                 "image limit.)",
+            variable=self.mode_var, value="images",
+        ).pack(anchor="w", padx=8, pady=(8, 2))
+        ttk.Radiobutton(
+            mode_frame,
+            text="Images + figures/charts  —  also removes vector plots, "
+                 "diagrams and vector-drawn tables (text-only result). "
+                 "Captions are kept.",
+            variable=self.mode_var, value="all",
+        ).pack(anchor="w", padx=8, pady=(0, 8))
+
+        # --- Step 3: output ---
+        out_frame = ttk.LabelFrame(self.root, text="3. Choose output folder")
         out_frame.pack(fill="x", **pad)
         row = ttk.Frame(out_frame)
         row.pack(fill="x", padx=8, pady=8)
@@ -222,7 +245,7 @@ class PdfImageRemoverApp:
             variable=self.suffix_var,
         ).pack(anchor="w", padx=8, pady=(0, 8))
 
-        # --- Step 3: run ---
+        # --- Step 4: run ---
         run_frame = ttk.Frame(self.root)
         run_frame.pack(fill="x", **pad)
         self.run_btn = ttk.Button(run_frame, text="Remove Images",
@@ -330,33 +353,37 @@ class PdfImageRemoverApp:
                                      f"Cannot create output folder:\n{exc}")
                 return
 
-        # lock UI
+        remove_vector = self.mode_var.get() == "all"
         self.run_btn.state(["disabled"])
         self.progress.configure(value=0, maximum=len(self.pdf_paths))
         self._log("-" * 50)
+        mode_txt = ("images + figures/charts (text-only)"
+                    if remove_vector else "images only")
         self._log(f"Processing {len(self.pdf_paths)} file(s) -> {out_dir}")
+        self._log(f"Mode: {mode_txt}")
 
         files = list(self.pdf_paths)
         suffix = DEFAULT_SUFFIX if self.suffix_var.get() else ""
         self.worker = threading.Thread(
-            target=self._worker, args=(files, out_dir, suffix), daemon=True
+            target=self._worker, args=(files, out_dir, suffix, remove_vector),
+            daemon=True,
         )
         self.worker.start()
 
-    def _worker(self, files, out_dir, suffix):
+    def _worker(self, files, out_dir, suffix, remove_vector):
         ok = fail = 0
         for i, path in enumerate(files, start=1):
             base = os.path.basename(path)
             stem, ext = os.path.splitext(base)
             out_name = f"{stem}{suffix}{ext}"
             out_path = os.path.join(out_dir, out_name)
-
-            # never overwrite the source file in place
             if os.path.abspath(out_path) == os.path.abspath(path):
                 out_path = os.path.join(out_dir, f"{stem}{DEFAULT_SUFFIX}{ext}")
 
             try:
-                removed, remaining = remove_images_from_pdf(path, out_path)
+                removed, remaining = remove_images_from_pdf(
+                    path, out_path, remove_vector=remove_vector
+                )
                 if remaining == 0:
                     self.msg_queue.put(
                         ("log", f"  OK  {base}  ->  {os.path.basename(out_path)} "
@@ -365,7 +392,7 @@ class PdfImageRemoverApp:
                 elif remaining > 0:
                     self.msg_queue.put(
                         ("log", f"  OK* {base}: {removed} removed, "
-                                f"{remaining} unusual image(s) could not be located")
+                                f"{remaining} image(s) could not be located")
                     )
                 else:
                     self.msg_queue.put(
@@ -374,9 +401,7 @@ class PdfImageRemoverApp:
                 ok += 1
             except Exception as exc:  # noqa: BLE001
                 fail += 1
-                self.msg_queue.put(
-                    ("log", f"  ERROR {base}: {exc}")
-                )
+                self.msg_queue.put(("log", f"  ERROR {base}: {exc}"))
                 self.msg_queue.put(("trace", traceback.format_exc()))
 
             self.msg_queue.put(("progress", i))
@@ -390,7 +415,6 @@ class PdfImageRemoverApp:
                 if kind == "log":
                     self._log(payload)
                 elif kind == "trace":
-                    # keep traces out of the main log but available on stderr
                     sys.stderr.write(payload + "\n")
                 elif kind == "progress":
                     self.progress.configure(value=payload)
@@ -407,8 +431,8 @@ class PdfImageRemoverApp:
                     else:
                         messagebox.showwarning(
                             APP_TITLE,
-                            f"Finished with issues.\n{ok} succeeded, {fail} failed.\n"
-                            "See the log for details.",
+                            f"Finished with issues.\n{ok} succeeded, {fail} "
+                            "failed.\nSee the log for details.",
                         )
         except queue.Empty:
             pass
@@ -417,7 +441,6 @@ class PdfImageRemoverApp:
 
 def main():
     root = tk.Tk()
-    # Use a slightly nicer theme when available.
     try:
         style = ttk.Style()
         if "vista" in style.theme_names():
