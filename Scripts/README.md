@@ -26,6 +26,8 @@ Author: **Jerry James**. Licensed under **GPL-3.0**.
 │   ├─ pdf_to_latex.py        PDF → LaTeX renderer
 │   ├─ pdf_to_markdown.py     PDF → Markdown renderer
 │   ├─ pdf_common.py          Shared PDF parsing engine
+│   ├─ pdf_math.py            Inline-math reconstruction (subscripts, symbols)
+│   ├─ pdf_equations.py       Display-equation detection + image extraction
 │   ├─ about_info.py          Tool metadata / features / how-to
 │   ├─ build_info.py          Build date (auto-generated; reset by clean.bat)
 │   ├─ make_assets.py         Regenerates icon.ico + splash.png
@@ -91,6 +93,36 @@ Run **`clean.bat`** to delete PyInstaller's `build/`, any `dist/`, `*.spec`,
 `__pycache__/` and `*.pyc`, and to reset `build_info.py` to the development
 placeholder. Your source files and the EXE in `Published_Tool` are left
 untouched.
+
+## Equation handling (PDF → LaTeX)
+
+PDF text extraction cannot fully recover complex LaTeX math (multi-line aligned
+equations, matrices, integrals). The LaTeX converter therefore offers four
+equation modes, selectable in the UI (default: **Rebuild as LaTeX math text**):
+
+| Mode | What it does | Trade-off |
+|------|--------------|-----------|
+| Rebuild as LaTeX math text | Equations become editable LaTeX with recovered sub/superscripts and symbols. | Compiles and is editable, but complex math is approximate and may need a manual check. |
+| Improve inline math only | Recovers inline symbols/subscripts; leaves display equations as plain text. | Lightest touch; display equations stay rough. |
+| Hybrid (text + equation images) | Inline math as text, plus an exact image for each display equation. | Editable prose with correct-looking equations; equations are images. |
+| Equation images (exact) | Every display equation is inserted as an exact cropped image. | Looks perfect; equations are not editable text. |
+
+For an equation-heavy paper, **Hybrid** or **Equation images** gives the most
+faithful result; **Rebuild as LaTeX text** is best when you intend to edit the
+equations afterwards.
+
+## Image file naming
+
+Extracted images are named with a short, configurable prefix taken from the PDF
+file name, a unique number (so several PDFs can share one `Latex_Resource`
+folder without clashing), and the figure/equation number, e.g.:
+
+```
+RISAidedM_3_Fig-2.png      RISAidedM_11_Eq-5.png      RISAidedM_1_Img-1.png
+```
+
+The prefix length is set in the UI (default **9** letters; set **0** to use the
+full PDF name).
 
 ## What the conversion does and doesn't do
 

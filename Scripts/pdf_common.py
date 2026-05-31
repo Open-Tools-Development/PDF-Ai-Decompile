@@ -474,8 +474,12 @@ def parse_structure(doc):
 # --------------------------------------------------------------------------- #
 #  Image / figure extraction                                                   #
 # --------------------------------------------------------------------------- #
-def extract_raster_images(doc, resource_dir, stem):
+def extract_raster_images(doc, resource_dir, stem, namer=None):
     """Save embedded raster images to resource_dir with unique names.
+
+    ``namer`` is an optional callable namer(kind, page) -> base filename
+    (without extension). When omitted, falls back to the legacy
+    ``{stem}_img{n}`` scheme.
 
     Returns list of {file, page} dicts (page is 0-based)."""
     os.makedirs(resource_dir, exist_ok=True)
@@ -497,7 +501,11 @@ def extract_raster_images(doc, resource_dir, stem):
                     pix = None
                     continue
                 counter += 1
-                fname = f"{stem}_img{counter}.png"
+                if namer is not None:
+                    base = namer("img", pno)
+                else:
+                    base = f"{stem}_img{counter}"
+                fname = base + ".png"
                 pix.save(os.path.join(resource_dir, fname))
                 saved.append({"file": fname, "page": pno})
                 pix = None
@@ -574,8 +582,12 @@ def _cluster_drawings_grid(page, cell=6.0):
     return clusters
 
 
-def extract_vector_figures(doc, resource_dir, stem, start_counter=0, dpi=200):
+def extract_vector_figures(doc, resource_dir, stem, start_counter=0, dpi=200,
+                           namer=None):
     """Rasterize vector-drawn figures (plots, diagrams, vector tables).
+
+    ``namer`` optional callable namer(kind, page) -> base filename. When
+    omitted, uses the legacy ``{stem}_fig{n}`` scheme.
 
     Returns list of {file, page} dicts."""
     os.makedirs(resource_dir, exist_ok=True)
@@ -598,7 +610,11 @@ def extract_vector_figures(doc, resource_dir, stem, start_counter=0, dpi=200):
             try:
                 pix = page.get_pixmap(clip=clip, dpi=dpi)
                 counter += 1
-                fname = f"{stem}_fig{counter}.png"
+                if namer is not None:
+                    base = namer("fig", pno)
+                else:
+                    base = f"{stem}_fig{counter}"
+                fname = base + ".png"
                 pix.save(os.path.join(resource_dir, fname))
                 saved.append({"file": fname, "page": pno})
                 pix = None
@@ -715,24 +731,26 @@ def _map_unicode(text):
 
 
 _CITE_GROUP_RE = re.compile(
-    r"\[\d+\](?:\s*[\u2013\u2014,\-]\s*\[\d+\])*"
+    r"(?<![A-Za-z0-9\]])\[\d+\](?:\s*[\u2013\u2014,\-]\s*\[\d+\])*"
 )
 _CITE_RANGE_RE = re.compile(r"\[(\d+)\]\s*[\u2013\u2014\-]\s*\[(\d+)\]")
 _CITE_SINGLE_RE = re.compile(r"\[(\d+)\]")
 
 
 def _convert_citations(text):
-    """Replace bracketed reference numbers with \\cite{...}."""
+    """Replace bracketed reference numbers with \\cite{...}.
+
+    A bracket group is only treated as a citation when it is NOT immediately
+    preceded by an identifier/closing-bracket character, so array indices like
+    ``r[0]`` or ``x[N-1]`` are left alone.
+    """
     def repl(m):
         group = m.group(0)
         nums = []
-        # Expand ranges first.
-        work = group
         for rm in _CITE_RANGE_RE.finditer(group):
             a, b = int(rm.group(1)), int(rm.group(2))
             if 0 < b - a < 60:
                 nums.extend(range(a, b + 1))
-        # Collect singletons not already covered by a range neighbourhood.
         singles = [int(x) for x in _CITE_SINGLE_RE.findall(group)]
         for s in singles:
             if s not in nums:
@@ -746,17 +764,212 @@ def _convert_citations(text):
     return _CITE_GROUP_RE.sub(repl, text)
 
 
-def latex_text(text, citations=True):
-    """Full pipeline: strip control chars -> escape specials -> citations
-    -> unicode map."""
+def _inline_mathify(text):
+    """Wrap inline math fragments in $...$, converting math Unicode to LaTeX
+    commands inside the math, while leaving ordinary prose untouched.
+
+    Conservative: only fragments that clearly look like math (a math symbol,
+    or a single/short token carrying a sub/superscript or Greek letter) get
+    wrapped. This runs on the RAW text, before LaTeX escaping of prose.
+    """
+    from pdf_math import MATH_SYMBOLS, _SUP, _SUB
+
+    math_unicode = set(MATH_SYMBOLS) | set(_SUP) | set(_SUB) | set(
+        "=≈≤≥≠×÷±∓∥√")
+    # Token = a maximal run of non-space chars. We greedily merge adjacent
+    # mathy tokens (and the spaces between them) into one math span.
+    tokens = re.split(r"(\s+)", text)
+
+    def token_is_math(tok):
+        if not tok.strip():
+            return False
+        if any(c in math_unicode for c in tok):
+            return True
+        # variable with a digit/letter subscript pattern like x_g handled later;
+        # treat short tokens with Greek as math
+        return False
+
+    out = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        tok = tokens[i]
+        if token_is_math(tok):
+            # Extend across following (space, mathy) pairs.
+            j = i
+            span_parts = [tok]
+            k = i + 1
+            while k + 1 < n:
+                sep = tokens[k]
+                nxt = tokens[k + 1]
+                if sep.strip() == "" and (token_is_math(nxt) or _short_var(nxt)):
+                    span_parts.append(sep)
+                    span_parts.append(nxt)
+                    k += 2
+                else:
+                    break
+            raw = "".join(span_parts)
+            out.append("\x00MATH\x00" + raw + "\x00ENDMATH\x00")
+            i = k
+        else:
+            out.append(tok)
+            i += 1
+    return "".join(out)
+
+
+def _short_var(tok):
+    """A short token that is plausibly part of a surrounding math expression.
+
+    Deliberately strict: a single variable letter (optionally with a digit),
+    a number, a bracket, or an operator. English words like 'is', 'the', 'are'
+    must NOT match, or prose gets swallowed into math spans.
+    """
+    t = tok.strip()
+    if not t:
+        return False
+    # Pure operators / brackets / punctuation used in math.
+    if re.fullmatch(r"[()\[\]{}+\-/*<>|=,;:]{1,3}", t):
+        return True
+    # A single variable letter, optionally followed by ONE digit (x, M2),
+    # or a short all-caps/!-vowel matrix-ish token (no lowercase English word).
+    if re.fullmatch(r"[A-Za-z]\d?", t):
+        return True
+    # A bare number (integer or decimal).
+    if re.fullmatch(r"\d+(?:\.\d+)?", t):
+        return True
+    return False
+
+
+def _render_inline_math(raw):
+    """Convert a raw math fragment (between sentinels) to $...$ LaTeX,
+    applying light subscript heuristics since plain text lacks font cues."""
+    from pdf_math import _emit_text_math, _post_clean_math
+    body = _emit_text_math(raw)
+    # Only these variable-like Greek letters take a trailing subscript run.
+    # (Relations/operators like \leq, \in, \times must NOT, or we'd produce
+    #  nonsense such as "\leq_{1}".)
+    var_cmds = [r"\alpha", r"\beta", r"\gamma", r"\delta", r"\epsilon",
+                r"\zeta", r"\eta", r"\theta", r"\iota", r"\kappa",
+                r"\lambda", r"\mu", r"\nu", r"\xi", r"\rho", r"\sigma",
+                r"\tau", r"\upsilon", r"\phi", r"\chi", r"\psi", r"\omega",
+                r"\Gamma", r"\Delta", r"\Theta", r"\Lambda", r"\Xi", r"\Pi",
+                r"\Sigma", r"\Phi", r"\Psi", r"\Omega"]
+    var_cmds.sort(key=len, reverse=True)
+    for cmd in var_cmds:
+        # Insert subscript braces; the negative-lookahead guards the command
+        # name so it is never extended into an invalid sequence.
+        body = re.sub(
+            re.escape(cmd) + r"([A-Za-z0-9]{1,4})(?![A-Za-z])",
+            lambda m: cmd + "_{" + m.group(1) + "}", body)
+    body = _post_clean_math(body)
+    body = body.strip()
+    if not body:
+        return ""
+    body = _sanitize_math_commands(body)
+    body = _balance_math_braces(body)
+    return "$" + body + "$"
+
+
+# Math commands that are safe to leave as-is inside $...$.
+_SAFE_MATH_CMDS = {
+    "alpha", "beta", "gamma", "delta", "epsilon", "varepsilon", "zeta", "eta",
+    "theta", "vartheta", "iota", "kappa", "lambda", "mu", "nu", "xi", "pi",
+    "varpi", "rho", "varrho", "sigma", "varsigma", "tau", "upsilon", "phi",
+    "varphi", "chi", "psi", "omega", "Gamma", "Delta", "Theta", "Lambda",
+    "Xi", "Pi", "Sigma", "Phi", "Psi", "Omega", "Upsilon",
+    "times", "div", "pm", "mp", "ast", "cdot", "circ", "sum", "prod", "int",
+    "sqrt", "partial", "nabla", "infty", "otimes", "oplus", "odot", "in",
+    "notin", "subset", "subseteq", "supseteq", "cup", "cap", "forall",
+    "exists", "leq", "geq", "neq", "approx", "equiv", "propto", "simeq",
+    "cong", "triangleq", "ll", "gg", "rightarrow", "leftarrow",
+    "leftrightarrow", "Rightarrow", "Leftarrow", "Leftrightarrow", "langle",
+    "rangle", "mid", "dots", "ldots", "cdots", "neg", "operatorname",
+    "mathcal", "mathbb", "mathrm", "mathbf", "left", "right", "frac", "text",
+}
+
+
+def _sanitize_math_commands(body):
+    """Replace any unknown ``\\word`` sequence inside math with upright text,
+    so a mis-reconstructed run like ``\\Omegagggej`` cannot break compilation.
+    """
+    def fix(m):
+        name = m.group(1)
+        if name in _SAFE_MATH_CMDS:
+            return "\\" + name
+        # Unknown: render the letters uprightly (drop the backslash).
+        return "\\mathrm{" + name + "}"
+
+    return re.sub(r"\\([A-Za-z]+)", fix, body)
+
+
+def _balance_math_braces(body):
+    """Ensure braces in a math fragment are balanced.
+
+    Script braces we inserted (``_{`` / ``^{``) and command-argument braces are
+    legitimate; but a literal ``{`` from set notation like ``{1,...,M}`` whose
+    partner ``}`` falls outside the fragment leaves an unbalanced brace that
+    breaks LaTeX. We convert *literal* set-notation braces to ``\\{`` / ``\\}``
+    and then append any missing closing braces for our own scripts.
+    """
+    out = []
+    i = 0
+    n = len(body)
+    open_script = 0
+    while i < n:
+        ch = body[i]
+        if ch == "{":
+            prev = body[i - 1] if i > 0 else ""
+            if prev in ("_", "^") or prev.isalpha():
+                open_script += 1
+                out.append("{")
+            else:
+                out.append("\\{")
+        elif ch == "}":
+            if open_script > 0:
+                open_script -= 1
+                out.append("}")
+            else:
+                out.append("\\}")
+        else:
+            out.append(ch)
+        i += 1
+    out.append("}" * open_script)
+    return "".join(out)
+
+
+def latex_text(text, citations=True, inline_math=False):
+    """Full pipeline. With ``inline_math`` True, inline math fragments are
+    wrapped in $...$ with recovered symbols; otherwise math Unicode is mapped
+    to \\ensuremath{...} tokens in prose (legacy behaviour)."""
     if not text:
         return ""
-    # Remove control characters (C0/C1) that leak from mangled PDF math and
-    # would break LaTeX with "invalid character" errors. Keep \t and \n.
+    # Remove control characters (C0/C1) that leak from mangled PDF math.
     text = "".join(
         ch for ch in text
         if ch in ("\t", "\n") or ord(ch) >= 0x20
     )
+
+    if inline_math:
+        # Normalize a leading list bullet to a text bullet (not math).
+        text = re.sub(r"^\s*[\u2022\u00b7\u25cf\u2219]\s+",
+                      "\\\\textbullet\\\\ ", text)
+        # 1) Mark math spans on raw text.
+        marked = _inline_mathify(text)
+        # 2) Split into prose vs math, process each appropriately.
+        pieces = re.split(r"\x00MATH\x00(.*?)\x00ENDMATH\x00", marked)
+        rendered = []
+        for idx, piece in enumerate(pieces):
+            if idx % 2 == 1:
+                rendered.append(_render_inline_math(piece))
+            else:
+                p = _escape_latex(piece)
+                if citations:
+                    p = _convert_citations(p)
+                p = _map_unicode(p)
+                rendered.append(p)
+        return "".join(rendered)
+
+    # Legacy prose path.
     t = _escape_latex(text)
     if citations:
         t = _convert_citations(t)
@@ -767,3 +980,37 @@ def latex_text(text, citations=True):
 def safe_label(stem):
     """A LaTeX-label-safe version of a filename stem."""
     return re.sub(r"[^A-Za-z0-9]+", "-", stem).strip("-") or "doc"
+
+
+def make_name_prefix(stem, prefix_len=9):
+    """Build a short, filesystem-safe prefix from the first ``prefix_len``
+    alphanumeric characters of the PDF name.
+
+    e.g. "RIS-Aided Mobile Localization.pdf" -> "RISAidedM" (len 9).
+    """
+    alnum = re.sub(r"[^A-Za-z0-9]+", "", stem)
+    if not alnum:
+        alnum = "doc"
+    if prefix_len and prefix_len > 0:
+        return alnum[:prefix_len]
+    return alnum
+
+
+def build_image_name(prefix, counter, kind="fig", fig_number=None):
+    """Compose a unique, descriptive image filename (without extension dir).
+
+    Layout:  <prefix>_<counter>[_Fig-<n>]
+      prefix     short PDF-name prefix (see make_name_prefix)
+      counter    global unique number, prevents duplicates across PDFs
+      fig_number when known, appended as 'Fig-3' / 'Eq-7' so the file maps
+                 to the figure/equation number in the paper.
+
+    Examples:
+      build_image_name("RISAidedM", 1, "fig", 3)  -> "RISAidedM_1_Fig-3"
+      build_image_name("RISAidedM", 5, "eq", 7)   -> "RISAidedM_5_Eq-7"
+      build_image_name("RISAidedM", 2, "img")     -> "RISAidedM_2_Img"
+    """
+    tag = {"fig": "Fig", "eq": "Eq", "img": "Img", "tab": "Tab"}.get(kind, "Fig")
+    if fig_number is not None:
+        return f"{prefix}_{counter}_{tag}-{fig_number}"
+    return f"{prefix}_{counter}_{tag}"

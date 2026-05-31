@@ -61,6 +61,11 @@ if exist "..\Published_Tool\PDFImageRemover.exe" (
     echo     ..\Published_Tool\PDFImageRemover.exe
     echo ============================================================
     echo  Tip: run clean.bat to delete build temp files before commit.
+    echo.
+    echo  If Windows Explorer still shows a generic icon for the EXE,
+    echo  it is just the Explorer icon cache. The icon is embedded
+    echo  correctly - copying the EXE elsewhere or signing out/in
+    echo  refreshes it. The icon always shows in the running window.
 ) else (
     echo Build did not produce an EXE. Scroll up for the PyInstaller error.
 )

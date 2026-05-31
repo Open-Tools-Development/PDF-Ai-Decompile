@@ -36,8 +36,15 @@ def _md_escape(text):
     return text
 
 
-def convert_pdf_to_markdown(pdf_path, out_dir):
-    """Convert ``pdf_path`` to a .md file in ``out_dir``. Returns the .md path."""
+def convert_pdf_to_markdown(pdf_path, out_dir, math_mode="text",
+                            name_prefix_len=9):
+    """Convert ``pdf_path`` to a .md file in ``out_dir``. Returns the .md path.
+
+    ``math_mode`` is accepted for API symmetry with the LaTeX converter. Markdown
+    output is full-text with no images by design, so all modes keep equations as
+    readable inline text (Unicode math symbols), which is ideal for AI tools.
+    ``name_prefix_len`` is accepted but unused here (no image files are written).
+    """
     os.makedirs(out_dir, exist_ok=True)
     stem = os.path.splitext(os.path.basename(pdf_path))[0]
 

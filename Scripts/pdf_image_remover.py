@@ -183,9 +183,32 @@ class App(ctk.CTk):
         self.latex_dest = tk.StringVar(value="beside")
         self.md_dest = tk.StringVar(value="beside")
         self.output_dir = tk.StringVar(value="")
+        # Math handling for LaTeX/Markdown conversion (default "text").
+        self.math_mode = tk.StringVar(value="text")
+        # Configurable short-name prefix length for extracted images (default 9).
+        self.prefix_len = tk.StringVar(value="9")
 
+        self._set_window_icon()
         self._build_ui()
         self.after(120, self._poll_queue)
+
+    def _set_window_icon(self):
+        """Set the title-bar / taskbar icon for the main window."""
+        try:
+            ico = resource_path("icon.ico")
+            if os.path.exists(ico):
+                self.iconbitmap(ico)            # Windows .ico
+        except Exception:
+            pass
+        # Cross-platform fallback via iconphoto (works on Linux/macOS too).
+        try:
+            from PIL import Image, ImageTk
+            png = resource_path("icon_preview.png")
+            if os.path.exists(png):
+                self._icon_img = ImageTk.PhotoImage(Image.open(png))
+                self.iconphoto(True, self._icon_img)
+        except Exception:
+            pass
 
     # ------------------------------- layout ------------------------------- #
     def _build_ui(self):
@@ -355,6 +378,65 @@ class App(ctk.CTk):
                            ).pack(anchor="w", padx=16, pady=(3, 10))
         self.remove_panel = p
 
+    # Math-mode option metadata (label, value, one-line explanation).
+    MATH_MODES = [
+        ("Rebuild as LaTeX math text", "text",
+         "Equations become editable LaTeX (compiles). Approximate \u2014 complex "
+         "math may need a manual check. Best for editing later."),
+        ("Improve inline math only", "inline",
+         "Recovers inline symbols/subscripts; leaves big display equations as "
+         "plain text. Lightest touch."),
+        ("Hybrid (text + equation images)", "hybrid",
+         "Inline math as text, plus exact images for display equations. Good "
+         "balance of editable text and correct equations."),
+        ("Equation images (exact)", "image",
+         "Every display equation is inserted as an exact image. Looks perfect "
+         "but equations are not editable text."),
+    ]
+
+    def _build_math_mode_selector(self, parent):
+        """A reusable math-mode chooser with explanations + a trade-off note."""
+        box = ctk.CTkFrame(parent, fg_color=("gray92", "gray16"))
+        ctk.CTkLabel(box, text="Equation handling",
+                     font=ctk.CTkFont(size=13, weight="bold"), anchor="w"
+                     ).pack(fill="x", padx=10, pady=(8, 0))
+        ctk.CTkLabel(
+            box,
+            text="PDF text can't fully recover complex math. Pick how to handle "
+                 "equations for this paper:",
+            anchor="w", justify="left", wraplength=300, text_color="gray"
+        ).pack(fill="x", padx=10, pady=(0, 4))
+        for label, value, expl in self.MATH_MODES:
+            row = ctk.CTkFrame(box, fg_color="transparent")
+            row.pack(fill="x", padx=8, pady=(2, 0))
+            ctk.CTkRadioButton(row, text=label, variable=self.math_mode,
+                               value=value).pack(anchor="w")
+            ctk.CTkLabel(row, text=expl, anchor="w", justify="left",
+                         wraplength=290, font=ctk.CTkFont(size=11),
+                         text_color="gray").pack(anchor="w", padx=(26, 4),
+                                                 pady=(0, 2))
+        ctk.CTkLabel(
+            box,
+            text="Trade-off: text = editable but approximate; images = exact "
+                 "but fixed pictures. Default is LaTeX text.",
+            anchor="w", justify="left", wraplength=300,
+            font=ctk.CTkFont(size=11, slant="italic"),
+            text_color=("#0284c7", "#38bdf8")
+        ).pack(fill="x", padx=10, pady=(4, 8))
+        return box
+
+    def _build_prefix_len_field(self, parent):
+        """Configurable short-name prefix length for extracted images."""
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        ctk.CTkLabel(row, text="Image name prefix length:",
+                     anchor="w").pack(side="left", padx=(10, 6), pady=6)
+        ctk.CTkEntry(row, textvariable=self.prefix_len, width=54).pack(
+            side="left")
+        ctk.CTkLabel(row, text="letters from PDF name (e.g. 9)",
+                     text_color="gray", font=ctk.CTkFont(size=11)).pack(
+            side="left", padx=8)
+        return row
+
     def _build_latex_panel(self):
         p = ctk.CTkFrame(self.options_holder)
         ctk.CTkLabel(
@@ -362,8 +444,21 @@ class App(ctk.CTk):
                     "shared \"Latex_Resource\" folder of extracted figures.",
             anchor="w", justify="left", wraplength=320
         ).pack(fill="x", padx=10, pady=(10, 6))
+
+        # Math-mode selector (the key new control).
+        self._build_math_mode_selector(p).pack(fill="x", padx=6, pady=(2, 6))
+
+        # Image naming.
+        self._build_prefix_len_field(p).pack(fill="x", padx=2)
+        ctk.CTkLabel(
+            p, text="Images are named like  Prefix_3_Fig-2.png  (unique number "
+                    "+ figure number), so multiple PDFs can share one folder.",
+            anchor="w", justify="left", wraplength=320, text_color="gray",
+            font=ctk.CTkFont(size=11)
+        ).pack(fill="x", padx=10, pady=(0, 6))
+
         ctk.CTkLabel(p, text="Save the .tex (and Latex_Resource):",
-                     anchor="w").pack(fill="x", padx=10, pady=(2, 2))
+                     anchor="w").pack(fill="x", padx=10, pady=(4, 2))
         ctk.CTkRadioButton(p, text="Beside each PDF",
                            variable=self.latex_dest, value="beside",
                            command=self._refresh_panels
@@ -521,12 +616,30 @@ class App(ctk.CTk):
                                      f"Cannot create output folder:\n{exc}")
                 return
 
+        # Validate the image-name prefix length (used by LaTeX conversion).
+        prefix_len = 9
+        if op == "latex":
+            raw = self.prefix_len.get().strip()
+            if raw:
+                try:
+                    prefix_len = int(raw)
+                    if prefix_len < 0 or prefix_len > 40:
+                        raise ValueError
+                except ValueError:
+                    messagebox.showerror(
+                        about_info.APP_NAME,
+                        "Image name prefix length must be a whole number "
+                        "between 0 and 40 (0 = use the full PDF name).")
+                    return
+
         cfg = {
             "op": op,
             "dest": dest,
             "out_dir": out_dir,
             "remove_vector": self.remove_mode.get() == "all",
             "suffix": "_noimg" if self.suffix_var.get() else "",
+            "math_mode": self.math_mode.get(),
+            "prefix_len": prefix_len,
             "files": list(self.pdf_paths),
         }
 
@@ -541,6 +654,11 @@ class App(ctk.CTk):
         if op == "remove":
             self._log("  Mode: " + ("images + figures (text-only)"
                                     if cfg["remove_vector"] else "images only"))
+        if op == "latex":
+            mm_label = dict((v, l) for l, v, _ in self.MATH_MODES).get(
+                cfg["math_mode"], cfg["math_mode"])
+            self._log(f"  Equations: {mm_label}")
+            self._log(f"  Image name prefix length: {cfg['prefix_len']}")
         self._log("  Output: " + ("beside each PDF" if dest == "beside"
                                    else out_dir))
 
@@ -578,12 +696,18 @@ class App(ctk.CTk):
                                         f"  OK  {base} -> "
                                         f"{os.path.basename(out_path)} ({note})"))
                 elif cfg["op"] == "latex":
-                    tex = convert_pdf_to_latex(path, target_dir)
+                    tex = convert_pdf_to_latex(
+                        path, target_dir,
+                        math_mode=cfg.get("math_mode", "text"),
+                        name_prefix_len=cfg.get("prefix_len", 9))
                     self.msg_queue.put(("log",
                                         f"  OK  {base} -> "
                                         f"{os.path.basename(tex)} (+ Latex_Resource)"))
                 elif cfg["op"] == "markdown":
-                    md = convert_pdf_to_markdown(path, target_dir)
+                    md = convert_pdf_to_markdown(
+                        path, target_dir,
+                        math_mode=cfg.get("math_mode", "text"),
+                        name_prefix_len=cfg.get("prefix_len", 9))
                     self.msg_queue.put(("log",
                                         f"  OK  {base} -> {os.path.basename(md)}"))
                 ok += 1

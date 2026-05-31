@@ -9,7 +9,7 @@ information appears identically everywhere and is trivial to update.
 
 APP_NAME = "PDF Image Remover"
 TAGLINE = "Image Remover \u00b7 LaTeX \u00b7 Markdown converter"
-VERSION = "2.0"
+VERSION = "2.1"
 AUTHOR = "Jerry James"
 LICENSE = "GPL-3.0 (GNU General Public License v3.0)"
 COPYRIGHT = "Copyright (C) 2026 Jerry James"
@@ -30,6 +30,12 @@ FEATURES = [
     "Convert PDF \u2192 LaTeX \u2014 one compilable IEEEtran .tex per PDF, with "
     "title, authors, abstract, index terms, all sections/subsections, "
     "figure & table captions, \\cite{} citations and an embedded bibliography.",
+    "Choose how equations are handled: rebuild as LaTeX text, inline-only, "
+    "hybrid (text + equation images), or exact equation images \u2014 pick what "
+    "suits each paper.",
+    "Configurable short image names (e.g. Prefix_3_Fig-2.png): a few letters "
+    "from the PDF name + a unique number + the figure number, so several PDFs "
+    "can safely share one Latex_Resource folder.",
     "Convert PDF \u2192 Markdown \u2014 full text, no images, ideal for feeding "
     "to AI tools.",
     "Figures (raster images and vector plots) extracted to a shared "
@@ -51,8 +57,11 @@ HOW_TO = [
 
 NOTES = [
     "LaTeX/Markdown conversion recovers the text and structure of the PDF; it "
-    "is not a pixel-perfect reproduction. Equations are extracted as "
-    "approximate plain text and may need manual review.",
+    "is not a pixel-perfect reproduction.",
+    "PDF text cannot fully recover complex LaTeX math. The \"Rebuild as LaTeX "
+    "text\" mode is a good editable approximation; for exact equations choose "
+    "the \"Hybrid\" or \"Equation images\" mode, which inserts the real "
+    "equations as images.",
     "In many IEEE papers the numeric table grids are drawn as vector graphics "
     "(not selectable text), so those values are captured as figure images "
     "rather than as text.",
