@@ -32,7 +32,7 @@ REM ---- Output EXE goes to ..\Published_Tool ; temp stays in Scripts ----
 if not exist "..\Published_Tool" mkdir "..\Published_Tool"
 
 echo.
-echo Building EXE (this can take a couple of minutes)...
+echo Building EXE (this can take a couple of minutes)... 
 echo.
 
 %PY% -m PyInstaller ^
