@@ -28,15 +28,15 @@ import re
 
 import fitz  # PyMuPDF
 
-from pdf_common import (
+from .pdf_common import (
     parse_structure, extract_raster_images, extract_vector_figures,
     latex_text, safe_label, make_name_prefix, build_image_name,
 )
-from pdf_equations import extract_equation_images
+from .pdf_equations import extract_equation_images
 
 
 _PREAMBLE = r"""%% ------------------------------------------------------------------
-%% Auto-generated from "__SRC_NAME__" by PDF Image Remover (PDF -> LaTeX).
+%% Auto-generated from "__SRC_NAME__" by PDF Ai Decompile (PDF -> LaTeX).
 %% Author of tool: Jerry James.  Licensed under GPL-3.0.
 %%
 %% This file recovers the TEXT and STRUCTURE of the original PDF in a clean,
@@ -88,7 +88,8 @@ def _equation_image_block(image_file, label):
 
 
 def convert_pdf_to_latex(pdf_path, out_dir, resource_dirname="Latex_Resource",
-                         math_mode="text", name_prefix_len=9):
+                         math_mode="text", name_prefix_len=9,
+                         out_basename=None):
     """Convert ``pdf_path`` to a .tex file in ``out_dir``.
 
     Parameters
@@ -98,6 +99,9 @@ def convert_pdf_to_latex(pdf_path, out_dir, resource_dirname="Latex_Resource",
     name_prefix_len : int
         Number of leading alphanumeric characters of the PDF name to use as the
         image-name prefix (default 9). 0 means use the full alphanumeric stem.
+    out_basename : str or None
+        If given, the .tex file is named ``<out_basename>.tex`` (used for an
+        optional output-name prefix). Defaults to the PDF stem.
 
     Returns the path to the written .tex file.
     """
@@ -105,7 +109,8 @@ def convert_pdf_to_latex(pdf_path, out_dir, resource_dirname="Latex_Resource",
         math_mode = "text"
     os.makedirs(out_dir, exist_ok=True)
     stem = os.path.splitext(os.path.basename(pdf_path))[0]
-    label_stem = safe_label(stem)
+    out_stem = out_basename if out_basename else stem
+    label_stem = safe_label(out_stem)
     resource_dir = os.path.join(out_dir, resource_dirname)
     prefix = make_name_prefix(stem, name_prefix_len)
 
@@ -265,7 +270,7 @@ def convert_pdf_to_latex(pdf_path, out_dir, resource_dirname="Latex_Resource",
 
     out.append("\n\\end{document}\n")
 
-    tex_path = os.path.join(out_dir, f"{stem}.tex")
+    tex_path = os.path.join(out_dir, f"{out_stem}.tex")
     with open(tex_path, "w", encoding="utf-8") as fh:
         fh.write("".join(out))
 

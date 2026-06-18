@@ -772,7 +772,7 @@ def _inline_mathify(text):
     or a single/short token carrying a sub/superscript or Greek letter) get
     wrapped. This runs on the RAW text, before LaTeX escaping of prose.
     """
-    from pdf_math import MATH_SYMBOLS, _SUP, _SUB
+    from .pdf_math import MATH_SYMBOLS, _SUP, _SUB
 
     math_unicode = set(MATH_SYMBOLS) | set(_SUP) | set(_SUB) | set(
         "=≈≤≥≠×÷±∓∥√")
@@ -843,7 +843,7 @@ def _short_var(tok):
 def _render_inline_math(raw):
     """Convert a raw math fragment (between sentinels) to $...$ LaTeX,
     applying light subscript heuristics since plain text lacks font cues."""
-    from pdf_math import _emit_text_math, _post_clean_math
+    from .pdf_math import _emit_text_math, _post_clean_math
     body = _emit_text_math(raw)
     # Only these variable-like Greek letters take a trailing subscript run.
     # (Relations/operators like \leq, \in, \times must NOT, or we'd produce

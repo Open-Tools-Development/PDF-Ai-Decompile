@@ -23,7 +23,7 @@ import re
 
 import fitz  # PyMuPDF
 
-from pdf_common import parse_structure
+from .pdf_common import parse_structure
 
 
 def _md_escape(text):
@@ -37,16 +37,18 @@ def _md_escape(text):
 
 
 def convert_pdf_to_markdown(pdf_path, out_dir, math_mode="text",
-                            name_prefix_len=9):
+                            name_prefix_len=9, out_basename=None):
     """Convert ``pdf_path`` to a .md file in ``out_dir``. Returns the .md path.
 
     ``math_mode`` is accepted for API symmetry with the LaTeX converter. Markdown
     output is full-text with no images by design, so all modes keep equations as
     readable inline text (Unicode math symbols), which is ideal for AI tools.
     ``name_prefix_len`` is accepted but unused here (no image files are written).
+    ``out_basename`` optionally overrides the output file stem.
     """
     os.makedirs(out_dir, exist_ok=True)
     stem = os.path.splitext(os.path.basename(pdf_path))[0]
+    out_stem = out_basename if out_basename else stem
 
     doc = fitz.open(pdf_path)
     try:
@@ -94,7 +96,7 @@ def convert_pdf_to_markdown(pdf_path, out_dir, math_mode="text",
             out.append(f"\n{r['num']}. {_md_escape(r['text'])}")
         out.append("\n")
 
-    md_path = os.path.join(out_dir, f"{stem}.md")
+    md_path = os.path.join(out_dir, f"{out_stem}.md")
     with open(md_path, "w", encoding="utf-8") as fh:
         fh.write("".join(out))
     return md_path

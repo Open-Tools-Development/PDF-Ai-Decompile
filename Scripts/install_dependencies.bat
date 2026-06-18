@@ -1,19 +1,14 @@
 @echo off
 REM ====================================================================
-REM  PDF Image Remover - install Python dependencies (run once)
+REM  PDF Ai Decompile - install Python dependencies (run once)
 REM  Author: Jerry James   License: GPL-3.0
+REM  Org: Open-Tools-Development
 REM ====================================================================
 setlocal
-echo Installing Python dependencies for PDF Image Remover...
+echo Installing Python dependencies for PDF Ai Decompile...
 echo.
-
-REM Prefer the Python launcher; fall back to python on PATH.
 where py >nul 2>nul
-if %ERRORLEVEL%==0 (
-    set "PY=py -3"
-) else (
-    set "PY=python"
-)
+if %ERRORLEVEL%==0 ( set "PY=py -3" ) else ( set "PY=python" )
 
 %PY% -m pip install --upgrade pip
 %PY% -m pip install -r requirements.txt

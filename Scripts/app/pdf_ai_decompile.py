@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PDF Image Remover  -  main application (CustomTkinter GUI)
+PDF Ai Decompile  -  main application (CustomTkinter GUI)
 ==========================================================
 A desktop tool that can:
   * remove images from PDFs (raster-only, or images + vector figures),
@@ -23,19 +23,33 @@ import customtkinter as ctk
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-import about_info
-from pdf_remove import remove_images_from_pdf
-from pdf_to_latex import convert_pdf_to_latex
-from pdf_to_markdown import convert_pdf_to_markdown
+from app import about_info
+from backend.pdf_remove import remove_images_from_pdf
+from backend.pdf_to_latex import convert_pdf_to_latex
+from backend.pdf_to_markdown import convert_pdf_to_markdown
 
 
 # --------------------------------------------------------------------------- #
 #  Helpers                                                                     #
 # --------------------------------------------------------------------------- #
 def resource_path(rel):
-    """Resolve a bundled asset path (works in dev and in a PyInstaller exe)."""
-    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, rel)
+    """Resolve a bundled asset (icon/splash) path.
+
+    In a PyInstaller one-file exe the assets are unpacked to ``sys._MEIPASS``.
+    Running from source, this file lives in ``Scripts/app/`` and the assets are
+    in ``Scripts/assets/`` — i.e. one level up, then into ``assets``.
+    """
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        # Try the bundle root first, then an assets/ subfolder.
+        for cand in (os.path.join(meipass, rel),
+                     os.path.join(meipass, "assets", rel)):
+            if os.path.exists(cand):
+                return cand
+        return os.path.join(meipass, rel)
+    here = os.path.dirname(os.path.abspath(__file__))          # .../Scripts/app
+    scripts = os.path.dirname(here)                            # .../Scripts
+    return os.path.join(scripts, "assets", rel)
 
 
 def close_pyi_splash():
@@ -132,8 +146,10 @@ class AboutDialog(ctk.CTkToplevel):
         para(f"Version: {about_info.VERSION}")
         para(f"Build: {about_info.build_date_string()}")
         para(f"Author: {about_info.AUTHOR}")
+        para(f"Organisation: {about_info.ORG}")
         para(f"License: {about_info.LICENSE}")
         para(about_info.COPYRIGHT)
+        para(f"Project: {about_info.PROJECT_URL}")
 
         section("About")
         para(about_info.DESCRIPTION)
@@ -150,6 +166,10 @@ class AboutDialog(ctk.CTkToplevel):
         for n in about_info.NOTES:
             para("\u2022  " + n)
 
+        section("Revision history")
+        for ver, note in about_info.REVISION_HISTORY:
+            para(f"v{ver} \u2014 {note}")
+
         section("This program is free software")
         para("It is distributed under the GNU General Public License v3.0, "
              "in the hope that it will be useful, but WITHOUT ANY WARRANTY; "
@@ -163,30 +183,66 @@ class AboutDialog(ctk.CTkToplevel):
 #  Main application                                                            #
 # --------------------------------------------------------------------------- #
 class App(ctk.CTk):
+    # Operation metadata: key -> (label, produces_pdf)
+    OPERATIONS = [
+        ("remove", "Remove images from PDF", True),
+        ("latex", "Convert PDF \u2192 LaTeX", False),
+        ("markdown", "Convert PDF \u2192 Markdown (full text)", False),
+    ]
+
+    # Math-mode option metadata (label, value, explanation).
+    MATH_MODES = [
+        ("Rebuild as LaTeX math text", "text",
+         "Equations become editable LaTeX (compiles). Approximate \u2014 complex "
+         "math may need a manual check. Best for editing later."),
+        ("Improve inline math only", "inline",
+         "Recovers inline symbols/subscripts; leaves big display equations as "
+         "plain text. Lightest touch."),
+        ("Hybrid (text + equation images)", "hybrid",
+         "Inline math as text, plus exact images for display equations. Good "
+         "balance of editable text and correct equations."),
+        ("Equation images (exact)", "image",
+         "Every display equation is inserted as an exact image. Looks perfect "
+         "but equations are not editable text."),
+    ]
+
+    DEFAULT_REMOVE_SUFFIX = "_noimg"
+    DEFAULT_CONV_PREFIX = ""        # optional name prefix for .tex/.md outputs
+
     def __init__(self):
         super().__init__()
         self.title(f"{about_info.APP_NAME}  v{about_info.VERSION}")
-        self.geometry("900x720")
-        self.minsize(820, 660)
+        # Larger default window so the options panel needs no scrolling.
+        self.geometry("1280x880")
+        self.minsize(1180, 820)
 
         self.pdf_paths = []
         self.msg_queue = queue.Queue()
         self.worker = None
 
-        # State variables
-        self.operation = tk.StringVar(value="")          # "" => nothing chosen
-        self.remove_mode = tk.StringVar(value="images")  # images | all
-        self.suffix_var = tk.BooleanVar(value=True)
+        # ---- State ----
+        # Operations are now independent toggles (any combination).
+        self.op_vars = {
+            "remove": tk.BooleanVar(value=False),
+            "latex": tk.BooleanVar(value=False),
+            "markdown": tk.BooleanVar(value=False),
+        }
         self.recursive_var = tk.BooleanVar(value=False)
-        # Output location for each operation: "beside" | "folder"
-        self.remove_dest = tk.StringVar(value="folder")
-        self.latex_dest = tk.StringVar(value="beside")
-        self.md_dest = tk.StringVar(value="beside")
+
+        # Common output destination shared by all operations.
+        self.dest = tk.StringVar(value="beside")      # beside | folder
         self.output_dir = tk.StringVar(value="")
-        # Math handling for LaTeX/Markdown conversion (default "text").
+
+        # Remove sub-options.
+        self.remove_mode = tk.StringVar(value="images")   # images | all
+        # Filename suffix to protect the original PDF (item 3).
+        self.remove_suffix = tk.StringVar(value=self.DEFAULT_REMOVE_SUFFIX)
+
+        # LaTeX/Markdown sub-options.
         self.math_mode = tk.StringVar(value="text")
-        # Configurable short-name prefix length for extracted images (default 9).
         self.prefix_len = tk.StringVar(value="9")
+        # Optional output-name prefix for converted files (editable, default).
+        self.conv_prefix = tk.StringVar(value=self.DEFAULT_CONV_PREFIX)
 
         self._set_window_icon()
         self._build_ui()
@@ -197,10 +253,9 @@ class App(ctk.CTk):
         try:
             ico = resource_path("icon.ico")
             if os.path.exists(ico):
-                self.iconbitmap(ico)            # Windows .ico
+                self.iconbitmap(ico)
         except Exception:
             pass
-        # Cross-platform fallback via iconphoto (works on Linux/macOS too).
         try:
             from PIL import Image, ImageTk
             png = resource_path("icon_preview.png")
@@ -212,8 +267,8 @@ class App(ctk.CTk):
 
     # ------------------------------- layout ------------------------------- #
     def _build_ui(self):
-        self.grid_columnconfigure(0, weight=3)
-        self.grid_columnconfigure(1, weight=2)
+        self.grid_columnconfigure(0, weight=2)
+        self.grid_columnconfigure(1, weight=3)
         self.grid_rowconfigure(1, weight=1)
 
         # ---- Header ----
@@ -249,7 +304,6 @@ class App(ctk.CTk):
         ctk.CTkCheckBox(btnrow, text="Subfolders",
                         variable=self.recursive_var).pack(side="left", padx=8)
 
-        # File list (themed tk.Listbox inside CTk for selection support).
         list_wrap = ctk.CTkFrame(left)
         list_wrap.grid(row=2, column=0, sticky="nsew", padx=10, pady=8)
         list_wrap.grid_rowconfigure(0, weight=1)
@@ -276,47 +330,41 @@ class App(ctk.CTk):
                       fg_color="gray30", hover_color="gray25",
                       command=self.remove_selected).pack(side="right", padx=4)
 
-        # ---- Right column: operation + options ----
+        # ---- Right column: operations + options (scrollable as a safety net) #
         right = ctk.CTkScrollableFrame(self, label_text="")
         right.grid(row=1, column=1, sticky="nsew", padx=(6, 12), pady=12)
         right.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(right, text="2.  Operation  (choose one)",
+        ctk.CTkLabel(right, text="2.  Operations  (enable any combination)",
                      font=ctk.CTkFont(size=15, weight="bold")
                      ).grid(row=0, column=0, sticky="w", pady=(4, 2))
-        ctk.CTkLabel(right, text="Nothing is selected by default.",
+        ctk.CTkLabel(right,
+                     text="Turn on one or more. Each runs on every PDF.",
                      text_color="gray", anchor="w"
                      ).grid(row=1, column=0, sticky="w", pady=(0, 6))
 
         ops = ctk.CTkFrame(right)
         ops.grid(row=2, column=0, sticky="ew", pady=4)
-        ctk.CTkRadioButton(ops, text="Remove images from PDF",
-                           variable=self.operation, value="remove",
-                           command=self._refresh_panels
-                           ).pack(anchor="w", padx=10, pady=(10, 4))
-        ctk.CTkRadioButton(ops, text="Convert PDF \u2192 LaTeX",
-                           variable=self.operation, value="latex",
-                           command=self._refresh_panels
-                           ).pack(anchor="w", padx=10, pady=4)
-        ctk.CTkRadioButton(ops, text="Convert PDF \u2192 Markdown (full text)",
-                           variable=self.operation, value="markdown",
-                           command=self._refresh_panels
-                           ).pack(anchor="w", padx=10, pady=(4, 10))
+        for key, label, _pdf in self.OPERATIONS:
+            ctk.CTkCheckBox(ops, text=label, variable=self.op_vars[key],
+                            command=self._refresh_panels
+                            ).pack(anchor="w", padx=10, pady=6)
 
-        # Options container (panels swapped depending on the operation).
         ctk.CTkLabel(right, text="3.  Options",
                      font=ctk.CTkFont(size=15, weight="bold")
                      ).grid(row=3, column=0, sticky="w", pady=(12, 2))
         self.options_holder = ctk.CTkFrame(right, fg_color="transparent")
         self.options_holder.grid(row=4, column=0, sticky="ew")
-        self.options_holder.grid_columnconfigure(0, weight=1)
+        # Two columns so all options fit without vertical scrolling: shared +
+        # remove options on the left, the taller convert options on the right.
+        self.options_holder.grid_columnconfigure(0, weight=1, uniform="opt")
+        self.options_holder.grid_columnconfigure(1, weight=1, uniform="opt")
 
-        self._build_remove_panel()
-        self._build_latex_panel()
-        self._build_markdown_panel()
-        self._build_output_folder_panel(right)
+        self._build_common_panel()      # shared: destination + folder
+        self._build_remove_panel()      # remove sub-options
+        self._build_latex_panel()       # latex/markdown shared sub-options
 
-        # ---- Run + progress (bottom, spans both columns) ----
+        # ---- Run + progress ----
         runbar = ctk.CTkFrame(self)
         runbar.grid(row=2, column=0, columnspan=2, sticky="ew",
                     padx=12, pady=(0, 6))
@@ -341,19 +389,47 @@ class App(ctk.CTk):
         logframe.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(logframe, text="Log", anchor="w"
                      ).grid(row=0, column=0, sticky="w", padx=10, pady=(8, 0))
-        self.log = ctk.CTkTextbox(logframe, height=130, wrap="word")
+        self.log = ctk.CTkTextbox(logframe, height=120, wrap="word")
         self.log.grid(row=1, column=0, sticky="nsew", padx=10, pady=8)
         self.log.configure(state="disabled")
 
         self._refresh_panels()
         self._log(f"{about_info.APP_NAME} v{about_info.VERSION} ready. "
-                  "Add PDFs, choose an operation, then click Start.")
+                  "Enable one or more operations, then click Start.")
 
-    # ---- option panels ----
+    # ---- common (shared) options panel ----
+    def _build_common_panel(self):
+        p = ctk.CTkFrame(self.options_holder)
+        ctk.CTkLabel(p, text="Output location (shared by all operations)",
+                     font=ctk.CTkFont(size=13, weight="bold"), anchor="w"
+                     ).pack(fill="x", padx=10, pady=(10, 4))
+        ctk.CTkRadioButton(p, text="Beside each PDF",
+                           variable=self.dest, value="beside",
+                           command=self._refresh_panels
+                           ).pack(anchor="w", padx=16, pady=3)
+        ctk.CTkRadioButton(p, text="In one chosen output folder",
+                           variable=self.dest, value="folder",
+                           command=self._refresh_panels
+                           ).pack(anchor="w", padx=16, pady=3)
+
+        self.folder_row = ctk.CTkFrame(p, fg_color="transparent")
+        self.folder_row.pack(fill="x", padx=10, pady=(2, 8))
+        self.folder_row.grid_columnconfigure(0, weight=1)
+        self.out_entry = ctk.CTkEntry(self.folder_row,
+                                      textvariable=self.output_dir,
+                                      placeholder_text="Choose a folder\u2026")
+        self.out_entry.grid(row=0, column=0, sticky="ew")
+        ctk.CTkButton(self.folder_row, text="Browse\u2026", width=90,
+                      command=self.choose_output).grid(row=0, column=1,
+                                                       padx=(8, 0))
+        self.common_panel = p
+
+    # ---- remove sub-options ----
     def _build_remove_panel(self):
         p = ctk.CTkFrame(self.options_holder)
-        ctk.CTkLabel(p, text="What to remove:",
-                     anchor="w").pack(fill="x", padx=10, pady=(10, 2))
+        ctk.CTkLabel(p, text="Remove images \u2014 options",
+                     font=ctk.CTkFont(size=13, weight="bold"), anchor="w"
+                     ).pack(fill="x", padx=10, pady=(10, 2))
         ctk.CTkRadioButton(
             p, text="Images only (keep charts, tables, layout)",
             variable=self.remove_mode, value="images"
@@ -362,170 +438,125 @@ class App(ctk.CTk):
             p, text="Images + figures/charts (text-only result)",
             variable=self.remove_mode, value="all"
         ).pack(anchor="w", padx=16, pady=3)
-        ctk.CTkCheckBox(
-            p, text='Append "_noimg" to output names (avoid overwriting)',
-            variable=self.suffix_var
-        ).pack(anchor="w", padx=10, pady=(8, 4))
-        ctk.CTkLabel(p, text="Save output:", anchor="w"
-                     ).pack(fill="x", padx=10, pady=(8, 2))
-        ctk.CTkRadioButton(p, text="Beside each PDF",
-                           variable=self.remove_dest, value="beside",
-                           command=self._refresh_panels
-                           ).pack(anchor="w", padx=16, pady=3)
-        ctk.CTkRadioButton(p, text="In one chosen output folder",
-                           variable=self.remove_dest, value="folder",
-                           command=self._refresh_panels
-                           ).pack(anchor="w", padx=16, pady=(3, 10))
+
+        # Filename suffix (mandatory when writing beside the PDF).
+        self.suffix_row = ctk.CTkFrame(p, fg_color="transparent")
+        self.suffix_row.pack(fill="x", padx=10, pady=(6, 2))
+        ctk.CTkLabel(self.suffix_row, text="Add to file name (end):",
+                     anchor="w").pack(side="left", padx=(0, 6))
+        ctk.CTkEntry(self.suffix_row, textvariable=self.remove_suffix,
+                     width=120).pack(side="left")
+        self.suffix_hint = ctk.CTkLabel(
+            p, text="", anchor="w", justify="left", wraplength=270,
+            font=ctk.CTkFont(size=11), text_color="gray")
+        self.suffix_hint.pack(fill="x", padx=10, pady=(0, 8))
         self.remove_panel = p
 
-    # Math-mode option metadata (label, value, one-line explanation).
-    MATH_MODES = [
-        ("Rebuild as LaTeX math text", "text",
-         "Equations become editable LaTeX (compiles). Approximate \u2014 complex "
-         "math may need a manual check. Best for editing later."),
-        ("Improve inline math only", "inline",
-         "Recovers inline symbols/subscripts; leaves big display equations as "
-         "plain text. Lightest touch."),
-        ("Hybrid (text + equation images)", "hybrid",
-         "Inline math as text, plus exact images for display equations. Good "
-         "balance of editable text and correct equations."),
-        ("Equation images (exact)", "image",
-         "Every display equation is inserted as an exact image. Looks perfect "
-         "but equations are not editable text."),
-    ]
-
+    # ---- LaTeX/Markdown shared sub-options (math + naming) ----
     def _build_math_mode_selector(self, parent):
-        """A reusable math-mode chooser with explanations + a trade-off note."""
         box = ctk.CTkFrame(parent, fg_color=("gray92", "gray16"))
-        ctk.CTkLabel(box, text="Equation handling",
+        ctk.CTkLabel(box, text="Equation handling (LaTeX)",
                      font=ctk.CTkFont(size=13, weight="bold"), anchor="w"
-                     ).pack(fill="x", padx=10, pady=(8, 0))
-        ctk.CTkLabel(
-            box,
-            text="PDF text can't fully recover complex math. Pick how to handle "
-                 "equations for this paper:",
-            anchor="w", justify="left", wraplength=300, text_color="gray"
-        ).pack(fill="x", padx=10, pady=(0, 4))
+                     ).pack(fill="x", padx=10, pady=(6, 0))
         for label, value, expl in self.MATH_MODES:
             row = ctk.CTkFrame(box, fg_color="transparent")
-            row.pack(fill="x", padx=8, pady=(2, 0))
-            ctk.CTkRadioButton(row, text=label, variable=self.math_mode,
-                               value=value).pack(anchor="w")
-            ctk.CTkLabel(row, text=expl, anchor="w", justify="left",
-                         wraplength=290, font=ctk.CTkFont(size=11),
-                         text_color="gray").pack(anchor="w", padx=(26, 4),
-                                                 pady=(0, 2))
+            row.pack(fill="x", padx=8, pady=0)
+            rb = ctk.CTkRadioButton(row, text=label, variable=self.math_mode,
+                                    value=value)
+            rb.pack(side="left", anchor="w")
+            # Compact: short explanation as an info tooltip-style label to the
+            # right keeps height down while staying visible.
+            ctk.CTkLabel(box, text=expl, anchor="w", justify="left",
+                         wraplength=270, font=ctk.CTkFont(size=10),
+                         text_color="gray").pack(anchor="w", padx=(30, 4),
+                                                 pady=(0, 1))
         ctk.CTkLabel(
             box,
-            text="Trade-off: text = editable but approximate; images = exact "
-                 "but fixed pictures. Default is LaTeX text.",
-            anchor="w", justify="left", wraplength=300,
-            font=ctk.CTkFont(size=11, slant="italic"),
+            text="Trade-off: text = editable but approximate; images = exact. "
+                 "Default: LaTeX text.",
+            anchor="w", justify="left", wraplength=270,
+            font=ctk.CTkFont(size=10, slant="italic"),
             text_color=("#0284c7", "#38bdf8")
-        ).pack(fill="x", padx=10, pady=(4, 8))
+        ).pack(fill="x", padx=10, pady=(2, 6))
         return box
-
-    def _build_prefix_len_field(self, parent):
-        """Configurable short-name prefix length for extracted images."""
-        row = ctk.CTkFrame(parent, fg_color="transparent")
-        ctk.CTkLabel(row, text="Image name prefix length:",
-                     anchor="w").pack(side="left", padx=(10, 6), pady=6)
-        ctk.CTkEntry(row, textvariable=self.prefix_len, width=54).pack(
-            side="left")
-        ctk.CTkLabel(row, text="letters from PDF name (e.g. 9)",
-                     text_color="gray", font=ctk.CTkFont(size=11)).pack(
-            side="left", padx=8)
-        return row
 
     def _build_latex_panel(self):
         p = ctk.CTkFrame(self.options_holder)
-        ctk.CTkLabel(
-            p, text="Each PDF becomes one compilable IEEE .tex file, with a "
-                    "shared \"Latex_Resource\" folder of extracted figures.",
-            anchor="w", justify="left", wraplength=320
-        ).pack(fill="x", padx=10, pady=(10, 6))
+        ctk.CTkLabel(p, text="Convert \u2014 options (LaTeX / Markdown)",
+                     font=ctk.CTkFont(size=13, weight="bold"), anchor="w"
+                     ).pack(fill="x", padx=10, pady=(10, 2))
 
-        # Math-mode selector (the key new control).
         self._build_math_mode_selector(p).pack(fill="x", padx=6, pady=(2, 6))
 
-        # Image naming.
-        self._build_prefix_len_field(p).pack(fill="x", padx=2)
+        # Optional output-name prefix for the .tex / .md files.
+        pref_row = ctk.CTkFrame(p, fg_color="transparent")
+        pref_row.pack(fill="x", padx=10, pady=(2, 0))
+        ctk.CTkLabel(pref_row, text="Output name prefix (optional):",
+                     anchor="w").pack(side="left", padx=(0, 6))
+        ctk.CTkEntry(pref_row, textvariable=self.conv_prefix, width=140,
+                     placeholder_text="(none)").pack(side="left")
+
+        # Image-name prefix length.
+        plen_row = ctk.CTkFrame(p, fg_color="transparent")
+        plen_row.pack(fill="x", padx=10, pady=(6, 0))
+        ctk.CTkLabel(plen_row, text="Image name prefix length:",
+                     anchor="w").pack(side="left", padx=(0, 6))
+        ctk.CTkEntry(plen_row, textvariable=self.prefix_len, width=54).pack(
+            side="left")
+        ctk.CTkLabel(plen_row, text="letters from PDF name (default 9, 0=full)",
+                     text_color="gray", font=ctk.CTkFont(size=11)).pack(
+            side="left", padx=8)
         ctk.CTkLabel(
             p, text="Images are named like  Prefix_3_Fig-2.png  (unique number "
                     "+ figure number), so multiple PDFs can share one folder.",
-            anchor="w", justify="left", wraplength=320, text_color="gray",
+            anchor="w", justify="left", wraplength=270, text_color="gray",
             font=ctk.CTkFont(size=11)
-        ).pack(fill="x", padx=10, pady=(0, 6))
-
-        ctk.CTkLabel(p, text="Save the .tex (and Latex_Resource):",
-                     anchor="w").pack(fill="x", padx=10, pady=(4, 2))
-        ctk.CTkRadioButton(p, text="Beside each PDF",
-                           variable=self.latex_dest, value="beside",
-                           command=self._refresh_panels
-                           ).pack(anchor="w", padx=16, pady=3)
-        ctk.CTkRadioButton(p, text="In one chosen output folder",
-                           variable=self.latex_dest, value="folder",
-                           command=self._refresh_panels
-                           ).pack(anchor="w", padx=16, pady=(3, 10))
+        ).pack(fill="x", padx=10, pady=(4, 8))
         self.latex_panel = p
 
-    def _build_markdown_panel(self):
-        p = ctk.CTkFrame(self.options_holder)
-        ctk.CTkLabel(
-            p, text="Each PDF becomes one Markdown (.md) file containing the "
-                    "full text, with no images.",
-            anchor="w", justify="left", wraplength=320
-        ).pack(fill="x", padx=10, pady=(10, 6))
-        ctk.CTkLabel(p, text="Save the .md:", anchor="w"
-                     ).pack(fill="x", padx=10, pady=(2, 2))
-        ctk.CTkRadioButton(p, text="Beside each PDF",
-                           variable=self.md_dest, value="beside",
-                           command=self._refresh_panels
-                           ).pack(anchor="w", padx=16, pady=3)
-        ctk.CTkRadioButton(p, text="In one chosen output folder",
-                           variable=self.md_dest, value="folder",
-                           command=self._refresh_panels
-                           ).pack(anchor="w", padx=16, pady=(3, 10))
-        self.markdown_panel = p
-
-    def _build_output_folder_panel(self, parent):
-        p = ctk.CTkFrame(parent)
-        p.grid(row=5, column=0, sticky="ew", pady=(10, 4))
-        p.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(p, text="Output folder", anchor="w"
-                     ).grid(row=0, column=0, sticky="w", padx=10, pady=(10, 2))
-        row = ctk.CTkFrame(p, fg_color="transparent")
-        row.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
-        row.grid_columnconfigure(0, weight=1)
-        self.out_entry = ctk.CTkEntry(row, textvariable=self.output_dir,
-                                      placeholder_text="Choose a folder\u2026")
-        self.out_entry.grid(row=0, column=0, sticky="ew")
-        ctk.CTkButton(row, text="Browse\u2026", width=90,
-                      command=self.choose_output).grid(row=0, column=1,
-                                                       padx=(8, 0))
-        self.output_folder_panel = p
-
-    def _current_dest(self):
-        op = self.operation.get()
-        return {"remove": self.remove_dest, "latex": self.latex_dest,
-                "markdown": self.md_dest}.get(op)
+    # ---- dynamic show/hide ----
+    def _selected_ops(self):
+        return [k for k in ("remove", "latex", "markdown")
+                if self.op_vars[k].get()]
 
     def _refresh_panels(self):
-        for panel in (self.remove_panel, self.latex_panel, self.markdown_panel):
-            panel.grid_forget()
-        op = self.operation.get()
-        if op == "remove":
-            self.remove_panel.grid(row=0, column=0, sticky="ew")
-        elif op == "latex":
-            self.latex_panel.grid(row=0, column=0, sticky="ew")
-        elif op == "markdown":
-            self.markdown_panel.grid(row=0, column=0, sticky="ew")
-        # Output-folder panel only matters when destination == folder.
-        dest = self._current_dest()
-        if op and dest and dest.get() == "folder":
-            self.output_folder_panel.grid()
+        ops = self._selected_ops()
+        self.common_panel.grid_forget()
+        self.remove_panel.grid_forget()
+        self.latex_panel.grid_forget()
+
+        # Left column: shared output options, then Remove options beneath.
+        left_row = 0
+        if ops:
+            self.common_panel.grid(row=left_row, column=0, sticky="new",
+                                   padx=(0, 5), pady=(0, 6))
+            left_row += 1
+        if self.dest.get() == "folder":
+            self.folder_row.pack(fill="x", padx=10, pady=(2, 8))
         else:
-            self.output_folder_panel.grid_remove()
+            self.folder_row.pack_forget()
+
+        if "remove" in ops:
+            self.remove_panel.grid(row=left_row, column=0, sticky="new",
+                                   padx=(0, 5), pady=(0, 6))
+            left_row += 1
+            self._update_suffix_hint()
+
+        # Right column: the taller convert options (LaTeX/Markdown).
+        if "latex" in ops or "markdown" in ops:
+            self.latex_panel.grid(row=0, column=1, rowspan=max(1, left_row),
+                                  sticky="new", padx=(5, 0), pady=(0, 6))
+
+    def _update_suffix_hint(self):
+        beside = self.dest.get() == "beside"
+        if beside:
+            self.suffix_hint.configure(
+                text="Required: writing beside each PDF, so a suffix is needed "
+                     "to avoid overwriting the original (e.g. \"_noimg\").")
+        else:
+            self.suffix_hint.configure(
+                text="Optional: outputs go to a separate folder, so the "
+                     "original is safe. Leave blank to keep the same name.")
 
     # ----------------------------- list ops ------------------------------- #
     def _refresh_list(self):
@@ -593,15 +624,15 @@ class App(ctk.CTk):
             messagebox.showwarning(about_info.APP_NAME,
                                    "Add at least one PDF first.")
             return
-        op = self.operation.get()
-        if op not in ("remove", "latex", "markdown"):
+        ops = self._selected_ops()
+        if not ops:
             messagebox.showerror(
                 about_info.APP_NAME,
-                "Please choose an operation (Remove images, Convert to "
-                "LaTeX, or Convert to Markdown) before starting.")
+                "Please enable at least one operation (Remove images, Convert "
+                "to LaTeX, or Convert to Markdown) before starting.")
             return
 
-        dest = self._current_dest().get()
+        dest = self.dest.get()
         out_dir = self.output_dir.get().strip()
         if dest == "folder":
             if not out_dir:
@@ -616,9 +647,19 @@ class App(ctk.CTk):
                                      f"Cannot create output folder:\n{exc}")
                 return
 
-        # Validate the image-name prefix length (used by LaTeX conversion).
+        # --- Validate the Remove suffix rule (item 3) ---
+        remove_suffix = self.remove_suffix.get().strip()
+        if "remove" in ops and dest == "beside" and not remove_suffix:
+            messagebox.showerror(
+                about_info.APP_NAME,
+                "When 'Remove images' writes beside each PDF, you must add a "
+                "suffix to the file name so the original PDF is not "
+                "overwritten (e.g. \"_noimg\").")
+            return
+
+        # --- Validate image-name prefix length (LaTeX) ---
         prefix_len = 9
-        if op == "latex":
+        if "latex" in ops:
             raw = self.prefix_len.get().strip()
             if raw:
                 try:
@@ -633,13 +674,14 @@ class App(ctk.CTk):
                     return
 
         cfg = {
-            "op": op,
+            "ops": ops,
             "dest": dest,
             "out_dir": out_dir,
             "remove_vector": self.remove_mode.get() == "all",
-            "suffix": "_noimg" if self.suffix_var.get() else "",
+            "remove_suffix": remove_suffix,
             "math_mode": self.math_mode.get(),
             "prefix_len": prefix_len,
+            "conv_prefix": self.conv_prefix.get().strip(),
             "files": list(self.pdf_paths),
         }
 
@@ -648,17 +690,21 @@ class App(ctk.CTk):
         self.progress.set(0)
         self.status_lbl.configure(text="Working\u2026")
         self._log("-" * 60)
-        opname = {"remove": "Remove images", "latex": "Convert to LaTeX",
-                  "markdown": "Convert to Markdown"}[op]
-        self._log(f"Operation: {opname}  |  {len(cfg['files'])} file(s)")
-        if op == "remove":
-            self._log("  Mode: " + ("images + figures (text-only)"
-                                    if cfg["remove_vector"] else "images only"))
-        if op == "latex":
-            mm_label = dict((v, l) for l, v, _ in self.MATH_MODES).get(
+        names = {"remove": "Remove images", "latex": "Convert to LaTeX",
+                 "markdown": "Convert to Markdown"}
+        self._log("Operations: " + ", ".join(names[o] for o in ops)
+                  + f"  |  {len(cfg['files'])} file(s)")
+        if "remove" in ops:
+            self._log("  Remove mode: " + ("images + figures (text-only)"
+                      if cfg["remove_vector"] else "images only")
+                      + (f"  | suffix: '{remove_suffix}'" if remove_suffix
+                         else "  | suffix: (none)"))
+        if "latex" in ops:
+            mm = dict((v, l) for l, v, _ in self.MATH_MODES).get(
                 cfg["math_mode"], cfg["math_mode"])
-            self._log(f"  Equations: {mm_label}")
-            self._log(f"  Image name prefix length: {cfg['prefix_len']}")
+            self._log(f"  Equations: {mm}  | image prefix length: {prefix_len}")
+        if cfg["conv_prefix"]:
+            self._log(f"  Output name prefix: '{cfg['conv_prefix']}'")
         self._log("  Output: " + ("beside each PDF" if dest == "beside"
                                    else out_dir))
 
@@ -671,51 +717,74 @@ class App(ctk.CTk):
             return os.path.dirname(os.path.abspath(src_path))
         return cfg["out_dir"]
 
+    def _conv_out_dir(self, base_dir, op_subfolder=None):
+        return base_dir
+
     def _worker(self, cfg):
         ok = fail = 0
         files = cfg["files"]
-        total = len(files)
-        for i, path in enumerate(files, start=1):
+        ops = cfg["ops"]
+        total = len(files) * max(1, len(ops))
+        step = 0
+        prefix = cfg.get("conv_prefix", "")
+
+        def named(stem):
+            return f"{prefix}{stem}" if prefix else stem
+
+        for path in files:
             base = os.path.basename(path)
             stem, ext = os.path.splitext(base)
             target_dir = self._target_dir_for(path, cfg)
             try:
                 os.makedirs(target_dir, exist_ok=True)
-                if cfg["op"] == "remove":
-                    out_name = f"{stem}{cfg['suffix']}{ext}"
-                    out_path = os.path.join(target_dir, out_name)
-                    if os.path.abspath(out_path) == os.path.abspath(path):
-                        out_path = os.path.join(target_dir,
-                                                f"{stem}_noimg{ext}")
-                    removed, remaining = remove_images_from_pdf(
-                        path, out_path, remove_vector=cfg["remove_vector"])
-                    note = (f"{removed} image(s) removed"
-                            if remaining == 0 else
-                            f"{removed} removed, {remaining} could not be located")
-                    self.msg_queue.put(("log",
-                                        f"  OK  {base} -> "
-                                        f"{os.path.basename(out_path)} ({note})"))
-                elif cfg["op"] == "latex":
-                    tex = convert_pdf_to_latex(
-                        path, target_dir,
-                        math_mode=cfg.get("math_mode", "text"),
-                        name_prefix_len=cfg.get("prefix_len", 9))
-                    self.msg_queue.put(("log",
-                                        f"  OK  {base} -> "
-                                        f"{os.path.basename(tex)} (+ Latex_Resource)"))
-                elif cfg["op"] == "markdown":
-                    md = convert_pdf_to_markdown(
-                        path, target_dir,
-                        math_mode=cfg.get("math_mode", "text"),
-                        name_prefix_len=cfg.get("prefix_len", 9))
-                    self.msg_queue.put(("log",
-                                        f"  OK  {base} -> {os.path.basename(md)}"))
-                ok += 1
             except Exception as exc:  # noqa: BLE001
-                fail += 1
                 self.msg_queue.put(("log", f"  ERROR {base}: {exc}"))
-                sys.stderr.write(traceback.format_exc() + "\n")
-            self.msg_queue.put(("progress", i / total))
+                step += len(ops)
+                self.msg_queue.put(("progress", step / total))
+                fail += len(ops)
+                continue
+
+            for op in ops:
+                try:
+                    if op == "remove":
+                        suffix = cfg["remove_suffix"]
+                        out_name = f"{stem}{suffix}{ext}"
+                        out_path = os.path.join(target_dir, out_name)
+                        # Never overwrite the source.
+                        if os.path.abspath(out_path) == os.path.abspath(path):
+                            out_path = os.path.join(
+                                target_dir, f"{stem}{self.DEFAULT_REMOVE_SUFFIX}{ext}")
+                        removed, remaining = remove_images_from_pdf(
+                            path, out_path, remove_vector=cfg["remove_vector"])
+                        note = (f"{removed} image(s) removed" if remaining == 0
+                                else f"{removed} removed, {remaining} not located")
+                        self.msg_queue.put((
+                            "log", f"  OK  {base} -> "
+                            f"{os.path.basename(out_path)} ({note})"))
+                    elif op == "latex":
+                        tex = convert_pdf_to_latex(
+                            path, target_dir,
+                            math_mode=cfg.get("math_mode", "text"),
+                            name_prefix_len=cfg.get("prefix_len", 9),
+                            out_basename=named(stem))
+                        self.msg_queue.put((
+                            "log", f"  OK  {base} -> "
+                            f"{os.path.basename(tex)} (+ Latex_Resource)"))
+                    elif op == "markdown":
+                        md = convert_pdf_to_markdown(
+                            path, target_dir,
+                            math_mode=cfg.get("math_mode", "text"),
+                            name_prefix_len=cfg.get("prefix_len", 9),
+                            out_basename=named(stem))
+                        self.msg_queue.put((
+                            "log", f"  OK  {base} -> {os.path.basename(md)}"))
+                    ok += 1
+                except Exception as exc:  # noqa: BLE001
+                    fail += 1
+                    self.msg_queue.put(("log", f"  ERROR {base} [{op}]: {exc}"))
+                    sys.stderr.write(traceback.format_exc() + "\n")
+                step += 1
+                self.msg_queue.put(("progress", step / total))
         self.msg_queue.put(("done", (ok, fail)))
 
     def _poll_queue(self):
@@ -735,7 +804,7 @@ class App(ctk.CTk):
                         text="Done" if fail == 0 else "Done (errors)")
                     if fail == 0:
                         messagebox.showinfo(about_info.APP_NAME,
-                                            f"Finished. {ok} file(s) processed.")
+                                            f"Finished. {ok} output(s) created.")
                     else:
                         messagebox.showwarning(
                             about_info.APP_NAME,
@@ -748,9 +817,9 @@ class App(ctk.CTk):
 def main():
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("dark-blue")
-    close_pyi_splash()       # close native exe splash, if any
+    close_pyi_splash()
     app = App()
-    show_source_splash()     # lightweight splash when run from source
+    show_source_splash()
     app.mainloop()
 
 
