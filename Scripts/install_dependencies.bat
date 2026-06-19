@@ -1,7 +1,7 @@
 @echo off
 REM ====================================================================
 REM  PDF Ai Decompile - install Python dependencies (run once)
-REM  Author: Jerry James   License: GPL-3.0
+REM  Authors: Jerry James & Nisha   License: GPL-3.0
 REM  Org: Open-Tools-Development
 REM ====================================================================
 setlocal

@@ -18,14 +18,45 @@ import sys
 from PIL import Image, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-FONT_DIR = "/usr/share/fonts/truetype/dejavu"
+
+# Directories searched for fonts, in order (Linux DejaVu, macOS, Windows). This
+# keeps the generator cross-platform so the icon/splash render correctly whether
+# the assets are rebuilt on a CI box or a developer's Windows machine.
+FONT_DIRS = [
+    "/usr/share/fonts/truetype/dejavu",
+    "/usr/share/fonts/truetype/freefont",
+    "/Library/Fonts",
+    "/System/Library/Fonts/Supplemental",
+    os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"),
+]
+
+# Map each logical (DejaVu) font name to acceptable substitutes per platform.
+FONT_CANDIDATES = {
+    "DejaVuSans-Bold.ttf": ["DejaVuSans-Bold.ttf", "arialbd.ttf",
+                            "segoeuib.ttf", "Arial Bold.ttf"],
+    "DejaVuSans.ttf": ["DejaVuSans.ttf", "arial.ttf", "segoeui.ttf",
+                       "Arial.ttf"],
+    "DejaVuSansMono-Bold.ttf": ["DejaVuSansMono-Bold.ttf", "consolab.ttf",
+                                "courbd.ttf", "Courier New Bold.ttf"],
+}
 
 
 def font(name, size):
-    try:
-        return ImageFont.truetype(os.path.join(FONT_DIR, name), size)
-    except Exception:
-        return ImageFont.load_default()
+    """Load a TrueType font, trying platform substitutes, else a default."""
+    for cand in FONT_CANDIDATES.get(name, [name]):
+        for d in FONT_DIRS:
+            path = os.path.join(d, cand)
+            if os.path.exists(path):
+                try:
+                    return ImageFont.truetype(path, size)
+                except Exception:
+                    pass
+        # Let PIL resolve the name from its own search path as a last resort.
+        try:
+            return ImageFont.truetype(cand, size)
+        except Exception:
+            pass
+    return ImageFont.load_default()
 
 
 # Palette
@@ -111,6 +142,15 @@ def make_splash(path, version, w=640, h=380):
     img = Image.new("RGB", (w, h), BG)
     d = ImageDraw.Draw(img)
 
+    # Pull identity (app name, tagline, authors) from the single source.
+    ai = _about_info()
+    app_name = getattr(ai, "APP_NAME", "PDF Ai Decompile")
+    tagline = getattr(
+        ai, "TAGLINE",
+        "Decompile PDFs \u00b7 LaTeX \u00b7 Markdown \u00b7 Modify PDF")
+    authors = ai.authors_string() if (ai and hasattr(ai, "authors_string")) \
+        else "Jerry James & Nisha"
+
     d.rectangle([0, 0, 8, h], fill=ACCENT)
     d.rectangle([0, 0, w, 100], fill=PANEL)
 
@@ -124,10 +164,8 @@ def make_splash(path, version, w=640, h=380):
         "RGBA").resize((72, 72))
     img.paste(icon, (26, 14), icon)
 
-    d.text((112, 24), "PDF Ai Decompile", font=f_title, fill=WHITE)
-    d.text((114, 64),
-           "Decompile PDFs  \u00b7  LaTeX  \u00b7  Markdown  \u00b7  Image removal",
-           font=f_sub, fill=ACCENT)
+    d.text((112, 24), app_name, font=f_title, fill=WHITE)
+    d.text((114, 64), tagline, font=f_sub, fill=ACCENT)
 
     y = 124
     desc = [
@@ -140,7 +178,7 @@ def make_splash(path, version, w=640, h=380):
         y += 22
 
     y += 12
-    chips = ["Remove images", "PDF \u2192 LaTeX", "PDF \u2192 Markdown"]
+    chips = ["Modify PDF", "PDF \u2192 LaTeX", "PDF \u2192 Markdown"]
     cx = 30
     for c in chips:
         tw = d.textlength(c, font=f_tiny)
@@ -150,7 +188,7 @@ def make_splash(path, version, w=640, h=380):
         cx += tw + 36
 
     d.line([30, h - 64, w - 24, h - 64], fill=(51, 65, 85), width=1)
-    d.text((30, h - 52), "by Jerry James", font=f_author, fill=WHITE)
+    d.text((30, h - 52), f"by {authors}", font=f_author, fill=WHITE)
     d.text((30, h - 30),
            "Open-Tools-Development  \u00b7  Open source  \u00b7  GPL-3.0",
            font=f_tiny, fill=MUTED)
@@ -164,16 +202,25 @@ def make_splash(path, version, w=640, h=380):
     img.save(path)
 
 
-def _get_version():
-    # Read the version from app.about_info without importing GUI deps.
+def _about_info():
+    """Return the app.about_info module (single source of identity), or None.
+
+    Imported without pulling in the GUI dependencies so the asset generator
+    stays runnable headless.
+    """
     scripts = os.path.dirname(HERE)
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
     try:
         from app import about_info
-        return about_info.VERSION
+        return about_info
     except Exception:
-        return "3.0"
+        return None
+
+
+def _get_version():
+    ai = _about_info()
+    return getattr(ai, "VERSION", "3.1") if ai else "3.1"
 
 
 if __name__ == "__main__":

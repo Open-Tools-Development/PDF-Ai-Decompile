@@ -3,11 +3,11 @@
 PDF Ai Decompile  -  main application (CustomTkinter GUI)
 ==========================================================
 A desktop tool that can:
-  * remove images from PDFs (raster-only, or images + vector figures),
+  * modify a PDF by removing images (raster-only, or images + vector figures),
   * convert a PDF to a compilable IEEE LaTeX project, or
   * convert a PDF to a full-text Markdown file (no images).
 
-Author: Jerry James.  License: GPL-3.0.
+Authors: see app.about_info.AUTHORS (Jerry James & Nisha).  License: GPL-3.0.
 
 The heavy lifting lives in sibling modules (pdf_remove, pdf_to_latex,
 pdf_to_markdown, pdf_common); this file is the UI and the batch runner.
@@ -145,7 +145,8 @@ class AboutDialog(ctk.CTkToplevel):
 
         para(f"Version: {about_info.VERSION}")
         para(f"Build: {about_info.build_date_string()}")
-        para(f"Author: {about_info.AUTHOR}")
+        para(f"Author{'s' if len(about_info.AUTHORS) > 1 else ''}: "
+             f"{about_info.authors_string()}")
         para(f"Organisation: {about_info.ORG}")
         para(f"License: {about_info.LICENSE}")
         para(about_info.COPYRIGHT)
@@ -185,7 +186,7 @@ class AboutDialog(ctk.CTkToplevel):
 class App(ctk.CTk):
     # Operation metadata: key -> (label, produces_pdf)
     OPERATIONS = [
-        ("remove", "Remove images from PDF", True),
+        ("modify", "Modify PDF  (remove images / figures)", True),
         ("latex", "Convert PDF \u2192 LaTeX", False),
         ("markdown", "Convert PDF \u2192 Markdown (full text)", False),
     ]
@@ -223,7 +224,7 @@ class App(ctk.CTk):
         # ---- State ----
         # Operations are now independent toggles (any combination).
         self.op_vars = {
-            "remove": tk.BooleanVar(value=False),
+            "modify": tk.BooleanVar(value=False),
             "latex": tk.BooleanVar(value=False),
             "markdown": tk.BooleanVar(value=False),
         }
@@ -233,7 +234,7 @@ class App(ctk.CTk):
         self.dest = tk.StringVar(value="beside")      # beside | folder
         self.output_dir = tk.StringVar(value="")
 
-        # Remove sub-options.
+        # Modify-PDF sub-options.
         self.remove_mode = tk.StringVar(value="images")   # images | all
         # Filename suffix to protect the original PDF (item 3).
         self.remove_suffix = tk.StringVar(value=self.DEFAULT_REMOVE_SUFFIX)
@@ -361,7 +362,7 @@ class App(ctk.CTk):
         self.options_holder.grid_columnconfigure(1, weight=1, uniform="opt")
 
         self._build_common_panel()      # shared: destination + folder
-        self._build_remove_panel()      # remove sub-options
+        self._build_modify_panel()      # Modify-PDF sub-options
         self._build_latex_panel()       # latex/markdown shared sub-options
 
         # ---- Run + progress ----
@@ -424,18 +425,18 @@ class App(ctk.CTk):
                                                        padx=(8, 0))
         self.common_panel = p
 
-    # ---- remove sub-options ----
-    def _build_remove_panel(self):
+    # ---- Modify-PDF sub-options ----
+    def _build_modify_panel(self):
         p = ctk.CTkFrame(self.options_holder)
-        ctk.CTkLabel(p, text="Remove images \u2014 options",
+        ctk.CTkLabel(p, text="Modify PDF \u2014 options",
                      font=ctk.CTkFont(size=13, weight="bold"), anchor="w"
                      ).pack(fill="x", padx=10, pady=(10, 2))
         ctk.CTkRadioButton(
-            p, text="Images only (keep charts, tables, layout)",
+            p, text="Remove images only (keep charts, tables, layout)",
             variable=self.remove_mode, value="images"
         ).pack(anchor="w", padx=16, pady=3)
         ctk.CTkRadioButton(
-            p, text="Images + figures/charts (text-only result)",
+            p, text="Remove images + figures/charts (text-only result)",
             variable=self.remove_mode, value="all"
         ).pack(anchor="w", padx=16, pady=3)
 
@@ -450,7 +451,7 @@ class App(ctk.CTk):
             p, text="", anchor="w", justify="left", wraplength=270,
             font=ctk.CTkFont(size=11), text_color="gray")
         self.suffix_hint.pack(fill="x", padx=10, pady=(0, 8))
-        self.remove_panel = p
+        self.modify_panel = p
 
     # ---- LaTeX/Markdown shared sub-options (math + naming) ----
     def _build_math_mode_selector(self, parent):
@@ -516,16 +517,16 @@ class App(ctk.CTk):
 
     # ---- dynamic show/hide ----
     def _selected_ops(self):
-        return [k for k in ("remove", "latex", "markdown")
+        return [k for k in ("modify", "latex", "markdown")
                 if self.op_vars[k].get()]
 
     def _refresh_panels(self):
         ops = self._selected_ops()
         self.common_panel.grid_forget()
-        self.remove_panel.grid_forget()
+        self.modify_panel.grid_forget()
         self.latex_panel.grid_forget()
 
-        # Left column: shared output options, then Remove options beneath.
+        # Left column: shared output options, then Modify-PDF options beneath.
         left_row = 0
         if ops:
             self.common_panel.grid(row=left_row, column=0, sticky="new",
@@ -536,8 +537,8 @@ class App(ctk.CTk):
         else:
             self.folder_row.pack_forget()
 
-        if "remove" in ops:
-            self.remove_panel.grid(row=left_row, column=0, sticky="new",
+        if "modify" in ops:
+            self.modify_panel.grid(row=left_row, column=0, sticky="new",
                                    padx=(0, 5), pady=(0, 6))
             left_row += 1
             self._update_suffix_hint()
@@ -628,7 +629,7 @@ class App(ctk.CTk):
         if not ops:
             messagebox.showerror(
                 about_info.APP_NAME,
-                "Please enable at least one operation (Remove images, Convert "
+                "Please enable at least one operation (Modify PDF, Convert "
                 "to LaTeX, or Convert to Markdown) before starting.")
             return
 
@@ -647,12 +648,12 @@ class App(ctk.CTk):
                                      f"Cannot create output folder:\n{exc}")
                 return
 
-        # --- Validate the Remove suffix rule (item 3) ---
+        # --- Validate the Modify-PDF suffix rule (item 3) ---
         remove_suffix = self.remove_suffix.get().strip()
-        if "remove" in ops and dest == "beside" and not remove_suffix:
+        if "modify" in ops and dest == "beside" and not remove_suffix:
             messagebox.showerror(
                 about_info.APP_NAME,
-                "When 'Remove images' writes beside each PDF, you must add a "
+                "When 'Modify PDF' writes beside each PDF, you must add a "
                 "suffix to the file name so the original PDF is not "
                 "overwritten (e.g. \"_noimg\").")
             return
@@ -690,12 +691,12 @@ class App(ctk.CTk):
         self.progress.set(0)
         self.status_lbl.configure(text="Working\u2026")
         self._log("-" * 60)
-        names = {"remove": "Remove images", "latex": "Convert to LaTeX",
+        names = {"modify": "Modify PDF", "latex": "Convert to LaTeX",
                  "markdown": "Convert to Markdown"}
         self._log("Operations: " + ", ".join(names[o] for o in ops)
                   + f"  |  {len(cfg['files'])} file(s)")
-        if "remove" in ops:
-            self._log("  Remove mode: " + ("images + figures (text-only)"
+        if "modify" in ops:
+            self._log("  Modify PDF — remove " + ("images + figures (text-only)"
                       if cfg["remove_vector"] else "images only")
                       + (f"  | suffix: '{remove_suffix}'" if remove_suffix
                          else "  | suffix: (none)"))
@@ -746,7 +747,7 @@ class App(ctk.CTk):
 
             for op in ops:
                 try:
-                    if op == "remove":
+                    if op == "modify":
                         suffix = cfg["remove_suffix"]
                         out_name = f"{stem}{suffix}{ext}"
                         out_path = os.path.join(target_dir, out_name)

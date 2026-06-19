@@ -9,12 +9,39 @@ update.
 """
 
 APP_NAME = "PDF Ai Decompile"
-TAGLINE = "Decompile PDFs \u00b7 LaTeX \u00b7 Markdown \u00b7 Image removal"
-VERSION = "3.0"
-AUTHOR = "Jerry James"
+TAGLINE = "Decompile PDFs \u00b7 LaTeX \u00b7 Markdown \u00b7 Modify PDF"
+VERSION = "3.1"
+
+# --------------------------------------------------------------------------- #
+#  Authors  (single source of truth)                                          #
+#  To add a new co-author, append their name to this list \u2014 it propagates    #
+#  automatically to the window title-bar, About dialog, splash image and the  #
+#  copyright line. Nothing else needs editing.                                #
+# --------------------------------------------------------------------------- #
+AUTHORS = ["Jerry James", "Nisha Elizabeth"]
+COPYRIGHT_YEAR = "2026"
+
+
+def authors_string(conjunction="&"):
+    """Return the author list as a readable string.
+
+    One author  -> "A"
+    Two authors -> "A & B"
+    Three+      -> "A, B & C"
+    """
+    names = [a.strip() for a in AUTHORS if a and a.strip()]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    return f"{', '.join(names[:-1])} {conjunction} {names[-1]}"
+
+
+# Backward-compatible single-string alias used around the app and splash.
+AUTHOR = authors_string()
 ORG = "Open-Tools-Development"
 LICENSE = "GPL-3.0 (GNU General Public License v3.0)"
-COPYRIGHT = "Copyright (C) 2026 Jerry James"
+COPYRIGHT = f"Copyright (C) {COPYRIGHT_YEAR} {authors_string()}"
 PROJECT_URL = "https://github.com/Open-Tools-Development/PDF-Ai-Decompile"
 
 DESCRIPTION = (
@@ -26,12 +53,12 @@ DESCRIPTION = (
 )
 
 FEATURES = [
-    "Run several operations at once: enable any combination of Remove images, "
+    "Run several operations at once: enable any combination of Modify PDF, "
     "Convert to LaTeX and Convert to Markdown \u2014 each runs on every PDF.",
-    "Remove images (raster only) \u2014 keeps charts, tables, equations and "
-    "the exact text layout. Clears AI image-upload limits.",
-    "Remove images + figures \u2014 also removes vector plots/diagrams for a "
-    "clean text-only PDF.",
+    "Modify PDF \u2014 remove images (raster only): keeps charts, tables, "
+    "equations and the exact text layout. Clears AI image-upload limits.",
+    "Modify PDF \u2014 remove images + figures: also removes vector "
+    "plots/diagrams for a clean text-only PDF.",
     "Convert PDF \u2192 LaTeX \u2014 one compilable IEEEtran .tex per PDF, with "
     "title, authors, abstract, index terms, all sections/subsections, "
     "figure & table captions, \\cite{} citations and an embedded bibliography.",
@@ -51,11 +78,11 @@ FEATURES = [
 
 HOW_TO = [
     "1. Add the PDF(s): use \"Add PDF File(s)\u2026\" or \"Add Folder\u2026\".",
-    "2. Enable one or more Operations (required): Remove images, Convert to "
+    "2. Enable one or more Operations (required): Modify PDF, Convert to "
     "LaTeX and/or Convert to Markdown. You can turn on any combination.",
     "3. Set the shared output location (beside each PDF, or one folder), then "
     "the sub-options for each enabled operation.",
-    "4. If Remove images writes beside each PDF, a filename suffix (e.g. "
+    "4. If Modify PDF writes beside each PDF, a filename suffix (e.g. "
     "\"_noimg\") is required so the original PDF is not overwritten. When "
     "writing to a separate folder the suffix is optional.",
     "5. Click the Start button. Progress and a log appear at the bottom.",
@@ -78,6 +105,11 @@ NOTES = [
 # Revision history (newest first). Shown in the About dialog and documented in
 # Doc/SKILL.md.
 REVISION_HISTORY = [
+    ("3.1", "Renamed the image-removal operation to \"Modify PDF\" so the "
+            "feature is easier to understand — it still removes images "
+            "(and optionally vector figures) while keeping text and layout. "
+            "Added co-author Nisha and made the author list configurable from a "
+            "single place (about_info.AUTHORS)."),
     ("3.0", "Renamed the tool to \"PDF Ai Decompile\" and moved it to the "
             "Open-Tools-Development organisation. Restructured the codebase "
             "into app/ (UI), backend/ (logic) and models/ (future native AI) "

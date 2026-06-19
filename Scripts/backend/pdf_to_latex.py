@@ -37,7 +37,7 @@ from .pdf_equations import extract_equation_images
 
 _PREAMBLE = r"""%% ------------------------------------------------------------------
 %% Auto-generated from "__SRC_NAME__" by PDF Ai Decompile (PDF -> LaTeX).
-%% Author of tool: Jerry James.  Licensed under GPL-3.0.
+%% Authors of tool: Jerry James & Nisha.  Licensed under GPL-3.0.
 %%
 %% This file recovers the TEXT and STRUCTURE of the original PDF in a clean,
 %% compilable IEEEtran form. It is NOT a pixel-perfect copy of the PDF.

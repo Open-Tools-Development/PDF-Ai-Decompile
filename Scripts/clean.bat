@@ -1,7 +1,7 @@
 @echo off
 REM ====================================================================
 REM  PDF Ai Decompile - clean build/run artifacts before a git commit
-REM  Author: Jerry James   License: GPL-3.0   Org: Open-Tools-Development
+REM  Authors: Jerry James & Nisha   License: GPL-3.0   Org: Open-Tools-Development
 REM
 REM  Removes the temporary folders/files created while building the EXE
 REM  or running the Python scripts. Does NOT touch your source files or

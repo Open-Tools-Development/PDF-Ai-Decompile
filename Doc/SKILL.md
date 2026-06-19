@@ -3,13 +3,16 @@ name: PDF Ai Decompile
 description: >
   Desktop tool that "decompiles" PDF papers (especially IEEE-format) back into
   clean structured source. Three operations, runnable in any combination:
-  (1) remove images from a PDF while keeping text and layout; (2) convert a PDF
+  (1) "Modify PDF" — remove images from a PDF while keeping text and layout;
+  (2) convert a PDF
   into a single compilable IEEEtran LaTeX file plus an extracted-figures folder;
   (3) convert a PDF into a full-text Markdown file with no images. The LaTeX and
   Markdown outputs are optimised for AI tools to read without processing the PDF.
   Use this document to understand the whole tool before modifying or extending it.
-version: "3.0"
-author: Jerry James
+version: "3.1"
+authors:
+  - Jerry James
+  - Nisha
 org: Open-Tools-Development
 license: GPL-3.0
 repository: https://github.com/Open-Tools-Development/PDF-Ai-Decompile
@@ -26,6 +29,34 @@ debug and extend the codebase. When you change behaviour, update this file.
 
 ---
 
+## 0. AI Agent Development Guidelines
+
+These rules govern how Claude Code (or any AI agent) assists with this project.
+
+### 0.1 Keep SKILL.md in sync
+Whenever any development change is made — new feature, refactor, bug fix,
+new convention — update the relevant section(s) of this file **in the same
+session**. This document is the single source of truth; a stale SKILL.md is
+worse than none.
+
+### 0.2 Never push to git
+The AI agent may read and write files in the local working directory freely,
+but **must never run `git commit`, `git push`, or any other git write command**.
+Git operations are the sole responsibility of the human authors (Jerry James
+and Nisha). This prevents unreviewed changes from reaching the remote.
+
+### 0.3 Scratchpad_Area — temporary workspace
+`Scratchpad_Area/` (at the repository root, git-ignored) is the AI agent's
+scratch space for:
+- Experimental or prototype scripts before they are moved to `Scripts/`
+- One-off test/debug helpers
+- Test PDF files used to verify tool behaviour
+
+Treat everything in `Scratchpad_Area/` as **disposable**. Never import from
+it in production code. Clean it up when work is complete if no longer needed.
+
+---
+
 ## 1. Purpose and mental model
 
 A PDF is a *compiled, display-oriented* artifact: text is positioned glyph by
@@ -36,8 +67,9 @@ image-upload limits.
 **PDF Ai Decompile reverses that** ("decompiles") into source that is easy to
 read and process:
 
-- **Remove images** → a PDF that keeps all text + exact layout but has zero
-  raster images (clears image limits), or a fully text-only PDF.
+- **Modify PDF** (remove images) → a PDF that keeps all text + exact layout but
+  has zero raster images (clears image limits), or a fully text-only PDF. This
+  is the operation the UI labels **"Modify PDF"** (internal op key `modify`).
 - **PDF → LaTeX** → one compilable IEEEtran `.tex` recovering title, authors,
   abstract, index terms, the full section hierarchy, captions, citations
   (`\cite{}`), an embedded bibliography, and author biographies; figures are
@@ -64,7 +96,7 @@ PDF-Ai-Decompile/
     │   └─ about_info.py         All identity strings + revision history
     ├─ backend/              Pure logic, no UI imports; safe to call headless
     │   ├─ pdf_common.py         Shared parser + text→LaTeX + image extraction
-    │   ├─ pdf_remove.py         Image removal
+    │   ├─ pdf_remove.py         Image removal (UI: "Modify PDF")
     │   ├─ pdf_to_latex.py       LaTeX renderer (consumes pdf_common structure)
     │   ├─ pdf_to_markdown.py    Markdown renderer
     │   ├─ pdf_math.py           Inline math reconstruction (symbols/scripts)
@@ -254,7 +286,11 @@ mode is the right default when the user wants to *edit* the math afterward.
 
 ---
 
-## 7. backend/pdf_remove.py — image removal
+## 7. backend/pdf_remove.py — image removal (UI: "Modify PDF")
+
+This backend powers the UI's **Modify PDF** operation (op key `modify`). The
+module keeps the `remove`/`image` vocabulary because that is mechanically what
+it does; only the *user-facing* name is "Modify PDF".
 
 `remove_images_from_pdf(input_path, output_path, remove_vector=False)` →
 `(removed, remaining)`.
@@ -294,18 +330,21 @@ symmetry but Markdown is always full-text, no images (ideal for AI ingestion).
 - `AboutDialog` — renders identity, features, how-to, notes and **revision
   history** from `about_info`.
 - `App` — the main window. Key state:
-  - `op_vars`: dict of three `BooleanVar` (remove / latex / markdown) — **any
-    combination** can be enabled; Start errors if none are.
+  - `op_vars`: dict of three `BooleanVar` (modify / latex / markdown) — **any
+    combination** can be enabled; Start errors if none are. (`modify` is the
+    image-removal operation, labelled **"Modify PDF"** in the UI; its panel is
+    built by `_build_modify_panel` → `self.modify_panel`.)
   - `dest` ("beside" | "folder") + `output_dir` — **shared** output location.
-  - Remove sub-options: `remove_mode` (images | all), `remove_suffix`
-    (default `_noimg`).
+  - Modify-PDF sub-options: `remove_mode` (images | all), `remove_suffix`
+    (default `_noimg`). The sub-option vars keep their `remove_*` names because
+    they drive the image-removal backend.
   - Convert sub-options: `math_mode`, `prefix_len`, `conv_prefix` (optional
     output-name prefix for `.tex`/`.md`).
   - Layout: a **two-column** options area so everything fits without scrolling —
     shared output + Remove options on the left, the taller Convert/equation
     options on the right. Panels are shown/hidden by `_refresh_panels()`.
-  - **Mandatory-suffix rule**: if Remove is on AND `dest == "beside"` AND the
-    suffix is empty → Start is blocked with an error (protects the original
+  - **Mandatory-suffix rule**: if Modify PDF is on AND `dest == "beside"` AND
+    the suffix is empty → Start is blocked with an error (protects the original
     PDF). With `dest == "folder"` the suffix is optional. The hint label updates
     live via `_update_suffix_hint()`.
   - `_worker(cfg)` runs in a thread: for each file × each enabled op it calls the
@@ -313,9 +352,18 @@ symmetry but Markdown is always full-text, no images (ideal for AI ingestion).
     (`files × ops` steps) and per-file log lines through `msg_queue`.
 
 `about_info.py` holds every user-visible string: `APP_NAME`, `TAGLINE`,
-`VERSION`, `AUTHOR`, `ORG`, `LICENSE`, `COPYRIGHT`, `PROJECT_URL`,
+`VERSION`, `AUTHORS` (the **single source of truth** for contributors) + the
+`authors_string()` helper and the derived `AUTHOR` alias, `ORG`, `LICENSE`,
+`COPYRIGHT` (derived from `AUTHORS` + `COPYRIGHT_YEAR`), `PROJECT_URL`,
 `DESCRIPTION`, `FEATURES`, `HOW_TO`, `NOTES`, `REVISION_HISTORY`. Change identity
 here and it propagates to the window, About dialog and (via make_assets) splash.
+
+- **Adding a co-author**: append the name to `about_info.AUTHORS`. Everything
+  else (window/About author line, copyright, and the splash "by …" line)
+  derives from it automatically — no other file needs editing. `make_assets.py`
+  reads the same list (`authors_string()`), and its font loader is now
+  cross-platform (Linux/macOS/Windows), so the splash regenerates correctly on
+  any dev machine via `python -m assets.make_assets`.
 
 ---
 

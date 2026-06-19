@@ -1,7 +1,7 @@
 @echo off
 REM ====================================================================
 REM  PDF Ai Decompile - build a standalone Windows EXE with PyInstaller
-REM  Author: Jerry James   License: GPL-3.0   Org: Open-Tools-Development
+REM  Authors: Jerry James & Nisha   License: GPL-3.0   Org: Open-Tools-Development
 REM
 REM  Folder layout (this script lives in "Scripts"):
 REM     <project>\Scripts\            <- all source (app\, backend\, models\,

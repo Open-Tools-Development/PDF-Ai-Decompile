@@ -6,7 +6,8 @@
 papers and turns them back into formats that are easy for AI tools (and humans)
 to work with. It can:
 
-* **Remove images** from a PDF while keeping all text and the exact layout,
+* **Modify PDF** — remove images from a PDF while keeping all text and the
+  exact layout (optionally remove vector figures too, for a text-only PDF),
 * **Convert a PDF to LaTeX** — one compilable IEEE `.tex` file per PDF, plus a
   shared `Latex_Resource` folder of extracted figures, or
 * **Convert a PDF to Markdown** — full text, no images.
@@ -16,7 +17,7 @@ designed so that **any AI tool can read the full paper without processing the
 PDF**, and the cleaned PDFs upload without hitting image limits.
 
 Built with [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter).
-Author: **Jerry James** · Org: **Open-Tools-Development** · License: **GPL-3.0**.
+Authors: **Jerry James & Nisha** · Org: **Open-Tools-Development** · License: **GPL-3.0**.
 
 Repository: <https://github.com/Open-Tools-Development/PDF-Ai-Decompile>
 
@@ -40,7 +41,7 @@ PDF-Ai-Decompile/
     ├─ backend/               Backend logic (PDF parsing & conversion)
     │   ├─ __init__.py
     │   ├─ pdf_common.py         Shared parser (structure, escaping, images)
-    │   ├─ pdf_remove.py         Image-removal engine
+    │   ├─ pdf_remove.py         Image-removal engine (UI: "Modify PDF")
     │   ├─ pdf_to_latex.py       PDF → LaTeX renderer (4 equation modes)
     │   ├─ pdf_to_markdown.py    PDF → Markdown renderer
     │   ├─ pdf_math.py           Inline-math reconstruction
@@ -79,12 +80,12 @@ python3 run_app.py
 
 1. **Add PDFs** — *Add PDF File(s)…* or *Add Folder…* (optionally *Subfolders*).
 2. **Enable one or more Operations** (required — any combination, each runs on
-   every PDF): Remove images, Convert → LaTeX, Convert → Markdown.
+   every PDF): Modify PDF, Convert → LaTeX, Convert → Markdown.
 3. **Set the shared output location** — *Beside each PDF* or *In one chosen
    output folder* — then the sub-options for each enabled operation. Options
    common to several operations (output location, output-name prefix) are shown
    once and shared.
-4. **Filename suffix rule (Remove images):** when output goes *beside each PDF*,
+4. **Filename suffix rule (Modify PDF):** when output goes *beside each PDF*,
    a filename suffix (default `_noimg`) is **required** so the original PDF is
    never overwritten. To a *separate folder* it is **optional**.
 5. Click **Start**.
