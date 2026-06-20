@@ -9,7 +9,7 @@ description: >
   (3) convert a PDF into a full-text Markdown file with no images. The LaTeX and
   Markdown outputs are optimised for AI tools to read without processing the PDF.
   Use this document to understand the whole tool before modifying or extending it.
-version: "3.1"
+version: "4.0"
 authors:
   - Jerry James
   - Nisha
@@ -95,6 +95,10 @@ PDF-Ai-Decompile/
     │   ├─ pdf_ai_decompile.py   The CTk window, option panels, batch runner
     │   └─ about_info.py         All identity strings + revision history
     ├─ backend/              Pure logic, no UI imports; safe to call headless
+    │   ├─ appconfig.py          Per-user tool config + recent projects (§13)
+    │   ├─ project.py            Project file (.paidproj) save/load/schema (§13)
+    │   ├─ pdf_info.py           Scan / password / page-render (Inspector) (§13)
+    │   ├─ runner.py             Headless project runner (resolve pw → jobs) (§13)
     │   ├─ pdf_common.py         Shared parser + text→LaTeX + image extraction
     │   ├─ pdf_remove.py         Image removal (UI: "Modify PDF")
     │   ├─ pdf_to_latex.py       LaTeX renderer (consumes pdf_common structure)
@@ -329,27 +333,30 @@ symmetry but Markdown is always full-text, no images (ideal for AI ingestion).
   PyInstaller's native `--splash` instead (`close_pyi_splash()` closes it).
 - `AboutDialog` — renders identity, features, how-to, notes and **revision
   history** from `about_info`.
-- `App` — the main window. Key state:
-  - `op_vars`: dict of three `BooleanVar` (modify / latex / markdown) — **any
-    combination** can be enabled; Start errors if none are. (`modify` is the
-    image-removal operation, labelled **"Modify PDF"** in the UI; its panel is
-    built by `_build_modify_panel` → `self.modify_panel`.)
-  - `dest` ("beside" | "folder") + `output_dir` — **shared** output location.
-  - Modify-PDF sub-options: `remove_mode` (images | all), `remove_suffix`
-    (default `_noimg`). The sub-option vars keep their `remove_*` names because
-    they drive the image-removal backend.
-  - Convert sub-options: `math_mode`, `prefix_len`, `conv_prefix` (optional
-    output-name prefix for `.tex`/`.md`).
-  - Layout: a **two-column** options area so everything fits without scrolling —
-    shared output + Remove options on the left, the taller Convert/equation
-    options on the right. Panels are shown/hidden by `_refresh_panels()`.
-  - **Mandatory-suffix rule**: if Modify PDF is on AND `dest == "beside"` AND
-    the suffix is empty → Start is blocked with an error (protects the original
-    PDF). With `dest == "folder"` the suffix is optional. The hint label updates
-    live via `_update_suffix_hint()`.
-  - `_worker(cfg)` runs in a thread: for each file × each enabled op it calls the
-    backend, never overwriting the source, and reports progress
-    (`files × ops` steps) and per-file log lines through `msg_queue`.
+- `App` — the main window, now **project-driven and tabbed** (v4.0). Key state:
+  - `self.project` (a `backend.project` dict) + `self.project_path` are the
+    single source of truth. tk variables are *views* on it: `_apply_project_to_ui()`
+    pushes the project into the widgets; `_gather_ui_to_project()` pulls widget
+    values back. Always call `_gather_ui_to_project()` before save/run.
+  - **Menu / toolbar**: native `tk.Menu` (best effort, `_has_native_menu`) plus a
+    header toolbar — both call `new_project` / `open_project` / `save_project` /
+    `save_project_as` / `_popup_recent`. Recent list comes from
+    `backend.appconfig`.
+  - **Tabs** (`CTkTabview`): **Files** (add files/folders, per-row select
+    checkbox + remove, Select all/none, filter by Name/Path/Size/Pages →
+    `_render_files`/`_filtered_files`), **Modify PDF** (`modify_enabled`,
+    `modify_mode` execute|validate, `remove_mode`, output panel + suffix),
+    **Decompile to Text** (`dec_enabled`, `fmt_latex`/`fmt_md`, `math_mode`,
+    prefix options, output panel), **Passwords** (`pool_box` + per-file entries
+    in `_perfile_vars`; "Detect passwords now" → `runner.resolve_password`),
+    **Inspector** (file selector + Info/Preview; info via `pdf_info.scan_pdf`,
+    preview via a thread calling `pdf_info.render_page_png`, images posted
+    through `msg_queue`).
+  - Per-file `selected` drives processing; the mandatory-suffix rule still
+    applies (Modify PDF + `dest=="beside"` + empty suffix → blocked).
+  - Running calls `backend.runner.run(self.project, ...)` in a thread; progress /
+    log / preview messages flow back through `msg_queue` to `_poll_queue` (kinds:
+    `log`, `progress`, `done`, `ipreview_*`). `Stop` sets `self._stop_flag`.
 
 `about_info.py` holds every user-visible string: `APP_NAME`, `TAGLINE`,
 `VERSION`, `AUTHORS` (the **single source of truth** for contributors) + the
@@ -411,3 +418,99 @@ added model's I/O here and in this file. See `Scripts/models/README.md`.
   possible. Author photos (raster) with no "Fig." caption are appended under
   "Additional Extracted Figures".
 - The Windows `.exe` must be built on Windows (PyInstaller is host-targeted).
+
+---
+
+## 13. v4.0 architecture — projects, two categories, passwords, inspector, AI
+
+v4.0 is a large, phased expansion. This section is the design contract; update
+it as each phase lands. **Decided names** (chosen for clarity):
+
+- The two top-level activity categories are **"Modify PDF"** and
+  **"Decompile to Text"** (the latter holds the text-based outputs: **LaTeX**
+  and **Markdown**, with room for more formats).
+- The file-information/preview/validation tab is the **"Inspector"** tab
+  (Info · Preview · Details).
+- Password discovery/cracking lives in its own **"Passwords"** tab.
+- The PDF pool with multi-select + filtering is the **"Files"** tab.
+
+### 13.1 Projects (IMPLEMENTED — `backend/project.py`, `backend/appconfig.py`)
+A **project** is one human-readable JSON file (`.paidproj`) with a friendly
+`name` that stores *all* settings so the user can resume later. Menu: New /
+Open / Save / Save As / Open Recent.
+
+- `backend/appconfig.py` — per-user, cross-platform config dir
+  (`%APPDATA%/PDF-Ai-Decompile` on Windows; `~/Library/Application Support/…`
+  on macOS; `~/.config/…` on Linux). Holds the **recent-projects** list and the
+  path of the hidden encrypted password pool (`.pwpool.enc`).
+- `backend/project.py` — `new_project(name)`, `save_project`, `save_project_as`
+  (renames the project after the new file stem), `load_project`. `default_project`
+  is the **single source of truth for the schema**; `load_project` deep-merges
+  saved values over current defaults (forward-compatible). All stored paths are
+  **relativized to the project file's folder** on save and resolved back on load,
+  so a project folder is portable. Heavy assets (downloaded AI models) live in a
+  sibling **project assets folder** named after the project
+  (`project_assets_path`).
+- Schema sections: `files[]` (path + `selected` + confirmed `password` +
+  discovered `info`), `output.{modify,decompile}` (dest = `beside`|`folder`),
+  `modify_pdf`, `decompile`, `passwords` (pool + per-file + cracking config),
+  `models`.
+
+### 13.2 Files tab (IMPLEMENTED — item 12)
+Multi-select pool with select-all/none, per-row remove, and filters
+(name / path / size / page count). Only `selected` files feed Modify / Decompile.
+Each entry's `info` (size/pages/encrypted) is filled by `pdf_info.scan_pdf` on
+add. Persists to `files[]`.
+
+### 13.3 Modify PDF (PARTIAL — items 6, 9, 11)
+DONE: output dest **beside each PDF** (mandatory non-empty suffix, never
+overwrite) or a **chosen folder**; **validate** vs **execute** run modes
+(validate logs what would change, also summarised in the Inspector); remove
+images / +vector. PLANNED (item 11): remove restrictions & password (needs
+`pikepdf`); search-&-replace text (regex); search-&-replace image; AI image
+analysis; per-file page range / pages-to-keep.
+
+### 13.4 Decompile to Text (IMPLEMENTED — items 4, 5)
+Pick any of LaTeX / Markdown; same output-dest model (beside / chosen folder).
+Reuses the existing `pdf_to_latex` / `pdf_to_markdown` backends via
+`backend.runner`.
+
+### 13.5 Passwords tab + Inspector (PARTIAL — items 7, 8, 9, 10)
+DONE: per-file password OR a shared candidate pool; `runner.resolve_password`
+tries them (empty password first), records the working one on the file entry,
+and the runner unlocks the PDF (via `pdf_info.make_decrypted_copy`) before the
+backends touch it — locked files are skipped and flagged. The **Inspector** tab
+shows name/size/pages, encrypted?, known password, permission restrictions, a
+scrollable **page preview** (`pdf_info.render_page_png`), and the planned
+operations. PLANNED: **cracking** (opt-in) — brute force
+(charset/length/pattern/threads/limit, files parallel or serial) and/or a
+**candidate-generator "model"** (see §13.6); recovered passwords deduped into the
+hidden encrypted global pool for reuse; forced re-evaluation.
+
+> PyMuPDF note: since ~1.27 `doc.needs_pass` stays truthy even after a
+> successful `authenticate()`. `pdf_info` therefore trusts the `authenticate()`
+> **return value**, not `needs_pass`.
+
+> Responsible use: PDF password recovery is for documents the user owns or is
+> authorised to access (a local, offline "forgot my password" utility). The UI
+> must carry that notice; the tool does not target remote systems.
+
+### 13.6 AI models — delivery & the "password model" reality (item 13)
+- **Delivery: download-on-demand** (recommended) into the project assets folder
+  (or a shared user cache), from a small **curated manifest** (id, source, URL,
+  sha256), verified on download; the tool runs fully without them (falls back to
+  heuristics / brute force). Also allow **user-supplied** models by local path /
+  HF id. Bundling into the EXE is rejected (model files are too large); manual
+  install is supported but not the default.
+- **Honest note**: there is no off-the-shelf model that "cracks" a PDF password.
+  What works is a **candidate-password generator**: wordlists, Markov / PCFG,
+  or NN guessers (PassGAN-style). So a password "model" implements a common
+  interface — *given the user's hints (length, charset, pattern, sample
+  passwords), yield candidate strings* — which the cracking engine then tests
+  against the PDF. Image analysis (item 11) is the opposite: real HF
+  vision-language/caption models (e.g. BLIP) work well and download-on-demand.
+
+### 13.7 New dependencies (added per phase, not all at once)
+`pikepdf` (remove restrictions/password, robust rewrite), and — only when the AI
+phases land — `huggingface_hub`/`transformers`/`torch` (kept optional, lazy
+imported, with heuristic fallbacks so the core tool stays light and offline).

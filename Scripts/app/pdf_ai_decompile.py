@@ -2,17 +2,25 @@
 """
 PDF Ai Decompile  -  main application (CustomTkinter GUI)
 ==========================================================
-A desktop tool that can:
-  * modify a PDF by removing images (raster-only, or images + vector figures),
-  * convert a PDF to a compilable IEEE LaTeX project, or
-  * convert a PDF to a full-text Markdown file (no images).
+A desktop tool, organised around **projects** and two activity categories:
+
+  * **Modify PDF**         — modify a PDF by removing images (raster, or images
+                             + vector figures); never overwrites the source.
+  * **Decompile to Text**  — rebuild a PDF into text formats (LaTeX, Markdown).
+
+Everything the user sets up (file pool + selection, output destinations, per-file
+and pool passwords, options) lives in a single ``.paidproj`` JSON project file so
+work can be saved and resumed. The window is tabbed:
+
+  Files · Modify PDF · Decompile to Text · Passwords · Inspector
 
 Authors: see app.about_info.AUTHORS (Jerry James & Nisha).  License: GPL-3.0.
 
-The heavy lifting lives in sibling modules (pdf_remove, pdf_to_latex,
-pdf_to_markdown, pdf_common); this file is the UI and the batch runner.
+The heavy lifting lives in ``backend`` (project, appconfig, pdf_info, runner,
+pdf_remove, pdf_to_latex, pdf_to_markdown); this file is UI + orchestration.
 """
 
+import io
 import os
 import sys
 import queue
@@ -24,24 +32,19 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 
 from app import about_info
-from backend.pdf_remove import remove_images_from_pdf
-from backend.pdf_to_latex import convert_pdf_to_latex
-from backend.pdf_to_markdown import convert_pdf_to_markdown
+from backend import appconfig
+from backend import project as projmod
+from backend import pdf_info
+from backend import runner
 
 
 # --------------------------------------------------------------------------- #
 #  Helpers                                                                     #
 # --------------------------------------------------------------------------- #
 def resource_path(rel):
-    """Resolve a bundled asset (icon/splash) path.
-
-    In a PyInstaller one-file exe the assets are unpacked to ``sys._MEIPASS``.
-    Running from source, this file lives in ``Scripts/app/`` and the assets are
-    in ``Scripts/assets/`` — i.e. one level up, then into ``assets``.
-    """
+    """Resolve a bundled asset (icon/splash) path."""
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
-        # Try the bundle root first, then an assets/ subfolder.
         for cand in (os.path.join(meipass, rel),
                      os.path.join(meipass, "assets", rel)):
             if os.path.exists(cand):
@@ -53,7 +56,6 @@ def resource_path(rel):
 
 
 def close_pyi_splash():
-    """Close the PyInstaller native splash (if running as a frozen exe)."""
     try:
         import pyi_splash  # only exists in the frozen exe
         pyi_splash.close()
@@ -76,12 +78,9 @@ def find_pdfs_in_folder(folder, recursive=False):
     return sorted(found)
 
 
-# --------------------------------------------------------------------------- #
-#  Splash (shown when running from source; the exe uses PyInstaller's splash)  #
-# --------------------------------------------------------------------------- #
 def show_source_splash(duration_ms=1800):
     if getattr(sys, "frozen", False):
-        return  # exe already shows the native splash
+        return
     splash_img = resource_path("splash.png")
     if not os.path.exists(splash_img):
         return None
@@ -90,8 +89,7 @@ def show_source_splash(duration_ms=1800):
         top.overrideredirect(True)
         img = tk.PhotoImage(file=splash_img)
         w, h = img.width(), img.height()
-        sw = top.winfo_screenwidth()
-        sh = top.winfo_screenheight()
+        sw, sh = top.winfo_screenwidth(), top.winfo_screenheight()
         top.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
         lbl = tk.Label(top, image=img, borderwidth=0)
         lbl.image = img
@@ -134,14 +132,14 @@ class AboutDialog(ctk.CTkToplevel):
         body = ctk.CTkScrollableFrame(self)
         body.pack(fill="both", expand=True, padx=14, pady=14)
 
+        def para(text):
+            ctk.CTkLabel(body, text=text, justify="left", anchor="w",
+                         wraplength=560).pack(fill="x", pady=2)
+
         def section(title):
             ctk.CTkLabel(body, text=title,
                          font=ctk.CTkFont(size=15, weight="bold"),
                          anchor="w").pack(fill="x", pady=(12, 4))
-
-        def para(text):
-            ctk.CTkLabel(body, text=text, justify="left", anchor="w",
-                         wraplength=560).pack(fill="x", pady=2)
 
         para(f"Version: {about_info.VERSION}")
         para(f"Build: {about_info.build_date_string()}")
@@ -154,28 +152,18 @@ class AboutDialog(ctk.CTkToplevel):
 
         section("About")
         para(about_info.DESCRIPTION)
-
         section("Features")
         for f in about_info.FEATURES:
-            para("\u2022  " + f)
-
+            para("•  " + f)
         section("How to use")
         for h in about_info.HOW_TO:
             para(h)
-
         section("Notes")
         for n in about_info.NOTES:
-            para("\u2022  " + n)
-
+            para("•  " + n)
         section("Revision history")
         for ver, note in about_info.REVISION_HISTORY:
-            para(f"v{ver} \u2014 {note}")
-
-        section("This program is free software")
-        para("It is distributed under the GNU General Public License v3.0, "
-             "in the hope that it will be useful, but WITHOUT ANY WARRANTY; "
-             "without even the implied warranty of MERCHANTABILITY or FITNESS "
-             "FOR A PARTICULAR PURPOSE. See the LICENSE file for details.")
+            para(f"v{ver} — {note}")
 
         ctk.CTkButton(self, text="Close", command=self.destroy).pack(pady=10)
 
@@ -184,73 +172,64 @@ class AboutDialog(ctk.CTkToplevel):
 #  Main application                                                            #
 # --------------------------------------------------------------------------- #
 class App(ctk.CTk):
-    # Operation metadata: key -> (label, produces_pdf)
-    OPERATIONS = [
-        ("modify", "Modify PDF  (remove images / figures)", True),
-        ("latex", "Convert PDF \u2192 LaTeX", False),
-        ("markdown", "Convert PDF \u2192 Markdown (full text)", False),
-    ]
-
-    # Math-mode option metadata (label, value, explanation).
     MATH_MODES = [
-        ("Rebuild as LaTeX math text", "text",
-         "Equations become editable LaTeX (compiles). Approximate \u2014 complex "
-         "math may need a manual check. Best for editing later."),
-        ("Improve inline math only", "inline",
-         "Recovers inline symbols/subscripts; leaves big display equations as "
-         "plain text. Lightest touch."),
-        ("Hybrid (text + equation images)", "hybrid",
-         "Inline math as text, plus exact images for display equations. Good "
-         "balance of editable text and correct equations."),
-        ("Equation images (exact)", "image",
-         "Every display equation is inserted as an exact image. Looks perfect "
-         "but equations are not editable text."),
+        ("Rebuild as LaTeX math text", "text"),
+        ("Improve inline math only", "inline"),
+        ("Hybrid (text + equation images)", "hybrid"),
+        ("Equation images (exact)", "image"),
     ]
-
-    DEFAULT_REMOVE_SUFFIX = "_noimg"
-    DEFAULT_CONV_PREFIX = ""        # optional name prefix for .tex/.md outputs
+    PREVIEW_PAGE_CAP = 40   # safety cap for the Inspector preview
 
     def __init__(self):
         super().__init__()
-        self.title(f"{about_info.APP_NAME}  v{about_info.VERSION}")
-        # Larger default window so the options panel needs no scrolling.
-        self.geometry("1280x880")
+        self.geometry("1320x900")
         self.minsize(1180, 820)
 
-        self.pdf_paths = []
+        self.project = projmod.new_project("Untitled Project")
+        self.project_path = None
         self.msg_queue = queue.Queue()
         self.worker = None
+        self._stop_flag = False
+        self._preview_imgs = []          # keep CTkImage refs alive
+        self._file_rows = []             # current Files-tab rows
+        self._perfile_vars = {}          # path -> StringVar (Passwords tab)
 
-        # ---- State ----
-        # Operations are now independent toggles (any combination).
-        self.op_vars = {
-            "modify": tk.BooleanVar(value=False),
-            "latex": tk.BooleanVar(value=False),
-            "markdown": tk.BooleanVar(value=False),
-        }
-        self.recursive_var = tk.BooleanVar(value=False)
-
-        # Common output destination shared by all operations.
-        self.dest = tk.StringVar(value="beside")      # beside | folder
-        self.output_dir = tk.StringVar(value="")
-
-        # Modify-PDF sub-options.
+        # ---- tk variables bound to settings (gathered into project on save/run)
+        self.proj_name = tk.StringVar(value=self.project["project"]["name"])
+        self.dest_modify = tk.StringVar(value="beside")
+        self.folder_modify = tk.StringVar(value="")
+        self.suffix = tk.StringVar(value="_noimg")
+        self.dest_dec = tk.StringVar(value="beside")
+        self.folder_dec = tk.StringVar(value="")
+        self.modify_enabled = tk.BooleanVar(value=False)
+        self.modify_mode = tk.StringVar(value="execute")
         self.remove_mode = tk.StringVar(value="images")   # images | all
-        # Filename suffix to protect the original PDF (item 3).
-        self.remove_suffix = tk.StringVar(value=self.DEFAULT_REMOVE_SUFFIX)
-
-        # LaTeX/Markdown sub-options.
+        self.dec_enabled = tk.BooleanVar(value=False)
+        self.fmt_latex = tk.BooleanVar(value=True)
+        self.fmt_md = tk.BooleanVar(value=True)
         self.math_mode = tk.StringVar(value="text")
         self.prefix_len = tk.StringVar(value="9")
-        # Optional output-name prefix for converted files (editable, default).
-        self.conv_prefix = tk.StringVar(value=self.DEFAULT_CONV_PREFIX)
+        self.out_prefix = tk.StringVar(value="")
+
+        # Files-tab filter.
+        self.filter_field = tk.StringVar(value="Name")
+        self.filter_value = tk.StringVar(value="")
+
+        # Inspector.
+        self.insp_file = tk.StringVar(value="")
+        self.insp_mode = tk.StringVar(value="info")       # info | preview
+        self._insp_paths = []
+
+        self.proj_name.trace_add("write", lambda *_: self._update_title())
 
         self._set_window_icon()
+        self._build_menu()
         self._build_ui()
+        self._apply_project_to_ui()
         self.after(120, self._poll_queue)
 
+    # ------------------------------------------------------------------ icon
     def _set_window_icon(self):
-        """Set the title-bar / taskbar icon for the main window."""
         try:
             ico = resource_path("icon.ico")
             if os.path.exists(ico):
@@ -266,323 +245,274 @@ class App(ctk.CTk):
         except Exception:
             pass
 
-    # ------------------------------- layout ------------------------------- #
+    # ------------------------------------------------------------------ menu
+    def _build_menu(self):
+        """Native menu bar (best effort); a header toolbar is the fallback."""
+        self._has_native_menu = False
+        try:
+            menubar = tk.Menu(self)
+            pm = tk.Menu(menubar, tearoff=0)
+            pm.add_command(label="New Project", accelerator="Ctrl+N",
+                           command=self.new_project)
+            pm.add_command(label="Open Project…", accelerator="Ctrl+O",
+                           command=self.open_project)
+            pm.add_command(label="Save", accelerator="Ctrl+S",
+                           command=self.save_project)
+            pm.add_command(label="Save As…", command=self.save_project_as)
+            self.recent_menu = tk.Menu(pm, tearoff=0,
+                                       postcommand=self._rebuild_recent_menu)
+            pm.add_cascade(label="Open Recent", menu=self.recent_menu)
+            pm.add_separator()
+            pm.add_command(label="Exit", command=self._on_close)
+            menubar.add_cascade(label="Project", menu=pm)
+
+            hm = tk.Menu(menubar, tearoff=0)
+            hm.add_command(label="About / Help", command=self._open_about)
+            menubar.add_cascade(label="Help", menu=hm)
+
+            self.configure(menu=menubar)
+            self._has_native_menu = True
+        except Exception:
+            self.recent_menu = None
+
+        self.bind_all("<Control-n>", lambda e: self.new_project())
+        self.bind_all("<Control-o>", lambda e: self.open_project())
+        self.bind_all("<Control-s>", lambda e: self.save_project())
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _rebuild_recent_menu(self):
+        if not getattr(self, "recent_menu", None):
+            return
+        self.recent_menu.delete(0, "end")
+        recents = appconfig.recent_projects()
+        if not recents:
+            self.recent_menu.add_command(label="(none)", state="disabled")
+            return
+        for r in recents:
+            path = r.get("path", "")
+            label = f"{r.get('name', 'Project')}  —  {path}"
+            self.recent_menu.add_command(
+                label=label, command=lambda p=path: self.open_project(p))
+
+    # ------------------------------------------------------------------ layout
     def _build_ui(self):
-        self.grid_columnconfigure(0, weight=2)
-        self.grid_columnconfigure(1, weight=3)
+        self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
-        # ---- Header ----
+        # ---- Header (identity + project name + toolbar) ----
         header = ctk.CTkFrame(self, corner_radius=0)
-        header.grid(row=0, column=0, columnspan=2, sticky="ew")
-        header.grid_columnconfigure(0, weight=1)
+        header.grid(row=0, column=0, sticky="ew")
+        header.grid_columnconfigure(2, weight=1)
+
         htext = ctk.CTkFrame(header, fg_color="transparent")
-        htext.grid(row=0, column=0, sticky="w", padx=16, pady=10)
+        htext.grid(row=0, column=0, sticky="w", padx=14, pady=8)
         ctk.CTkLabel(htext, text=about_info.APP_NAME,
-                     font=ctk.CTkFont(size=20, weight="bold")).pack(anchor="w")
+                     font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w")
         ctk.CTkLabel(htext, text=about_info.TAGLINE,
-                     text_color=("#0284c7", "#38bdf8")).pack(anchor="w")
-        ctk.CTkButton(header, text="About / Help", width=120,
-                      command=self._open_about).grid(row=0, column=1,
-                                                     padx=16, pady=10)
+                     text_color=("#0284c7", "#38bdf8"),
+                     font=ctk.CTkFont(size=11)).pack(anchor="w")
 
-        # ---- Left column: file queue ----
-        left = ctk.CTkFrame(self)
-        left.grid(row=1, column=0, sticky="nsew", padx=(12, 6), pady=12)
-        left.grid_rowconfigure(2, weight=1)
-        left.grid_columnconfigure(0, weight=1)
+        namebox = ctk.CTkFrame(header, fg_color="transparent")
+        namebox.grid(row=0, column=1, sticky="w", padx=10)
+        ctk.CTkLabel(namebox, text="Project:").pack(side="left", padx=(0, 6))
+        ctk.CTkEntry(namebox, textvariable=self.proj_name, width=220).pack(
+            side="left")
 
-        ctk.CTkLabel(left, text="1.  PDFs to process",
-                     font=ctk.CTkFont(size=15, weight="bold")
-                     ).grid(row=0, column=0, sticky="w", padx=12, pady=(12, 4))
+        toolbar = ctk.CTkFrame(header, fg_color="transparent")
+        toolbar.grid(row=0, column=3, sticky="e", padx=12, pady=8)
+        for txt, cmd in (("New", self.new_project),
+                         ("Open", self.open_project),
+                         ("Save", self.save_project),
+                         ("Save As", self.save_project_as),
+                         ("Recent ▾", self._popup_recent),
+                         ("About", self._open_about)):
+            ctk.CTkButton(toolbar, text=txt, width=72, command=cmd).pack(
+                side="left", padx=3)
 
-        btnrow = ctk.CTkFrame(left, fg_color="transparent")
-        btnrow.grid(row=1, column=0, sticky="ew", padx=10)
-        ctk.CTkButton(btnrow, text="Add PDF File(s)\u2026", width=130,
-                      command=self.add_files).pack(side="left", padx=4, pady=4)
-        ctk.CTkButton(btnrow, text="Add Folder\u2026", width=110,
-                      command=self.add_folder).pack(side="left", padx=4)
-        ctk.CTkCheckBox(btnrow, text="Subfolders",
-                        variable=self.recursive_var).pack(side="left", padx=8)
+        # ---- Tabview ----
+        self.tabview = ctk.CTkTabview(self)
+        self.tabview.grid(row=1, column=0, sticky="nsew", padx=12, pady=(8, 4))
+        for name in ("Files", "Modify PDF", "Decompile to Text",
+                     "Passwords", "Inspector"):
+            self.tabview.add(name)
+        self._build_files_tab(self.tabview.tab("Files"))
+        self._build_modify_tab(self.tabview.tab("Modify PDF"))
+        self._build_decompile_tab(self.tabview.tab("Decompile to Text"))
+        self._build_passwords_tab(self.tabview.tab("Passwords"))
+        self._build_inspector_tab(self.tabview.tab("Inspector"))
 
-        list_wrap = ctk.CTkFrame(left)
-        list_wrap.grid(row=2, column=0, sticky="nsew", padx=10, pady=8)
-        list_wrap.grid_rowconfigure(0, weight=1)
-        list_wrap.grid_columnconfigure(0, weight=1)
-        self.listbox = tk.Listbox(
-            list_wrap, selectmode=tk.EXTENDED, activestyle="none",
-            background="#1d2433", foreground="#e2e8f0",
-            selectbackground="#38bdf8", selectforeground="#0f172a",
-            highlightthickness=0, borderwidth=0, font=("Segoe UI", 10),
-        )
-        ys = ctk.CTkScrollbar(list_wrap, command=self.listbox.yview)
-        self.listbox.configure(yscrollcommand=ys.set)
-        self.listbox.grid(row=0, column=0, sticky="nsew")
-        ys.grid(row=0, column=1, sticky="ns")
-
-        delrow = ctk.CTkFrame(left, fg_color="transparent")
-        delrow.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 10))
-        self.count_label = ctk.CTkLabel(delrow, text="Queued: 0")
-        self.count_label.pack(side="left", padx=4)
-        ctk.CTkButton(delrow, text="Clear", width=70, fg_color="gray30",
-                      hover_color="gray25",
-                      command=self.clear_list).pack(side="right", padx=4)
-        ctk.CTkButton(delrow, text="Remove selected", width=130,
-                      fg_color="gray30", hover_color="gray25",
-                      command=self.remove_selected).pack(side="right", padx=4)
-
-        # ---- Right column: operations + options (scrollable as a safety net) #
-        right = ctk.CTkScrollableFrame(self, label_text="")
-        right.grid(row=1, column=1, sticky="nsew", padx=(6, 12), pady=12)
-        right.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(right, text="2.  Operations  (enable any combination)",
-                     font=ctk.CTkFont(size=15, weight="bold")
-                     ).grid(row=0, column=0, sticky="w", pady=(4, 2))
-        ctk.CTkLabel(right,
-                     text="Turn on one or more. Each runs on every PDF.",
-                     text_color="gray", anchor="w"
-                     ).grid(row=1, column=0, sticky="w", pady=(0, 6))
-
-        ops = ctk.CTkFrame(right)
-        ops.grid(row=2, column=0, sticky="ew", pady=4)
-        for key, label, _pdf in self.OPERATIONS:
-            ctk.CTkCheckBox(ops, text=label, variable=self.op_vars[key],
-                            command=self._refresh_panels
-                            ).pack(anchor="w", padx=10, pady=6)
-
-        ctk.CTkLabel(right, text="3.  Options",
-                     font=ctk.CTkFont(size=15, weight="bold")
-                     ).grid(row=3, column=0, sticky="w", pady=(12, 2))
-        self.options_holder = ctk.CTkFrame(right, fg_color="transparent")
-        self.options_holder.grid(row=4, column=0, sticky="ew")
-        # Two columns so all options fit without vertical scrolling: shared +
-        # remove options on the left, the taller convert options on the right.
-        self.options_holder.grid_columnconfigure(0, weight=1, uniform="opt")
-        self.options_holder.grid_columnconfigure(1, weight=1, uniform="opt")
-
-        self._build_common_panel()      # shared: destination + folder
-        self._build_modify_panel()      # Modify-PDF sub-options
-        self._build_latex_panel()       # latex/markdown shared sub-options
-
-        # ---- Run + progress ----
+        # ---- Run bar ----
         runbar = ctk.CTkFrame(self)
-        runbar.grid(row=2, column=0, columnspan=2, sticky="ew",
-                    padx=12, pady=(0, 6))
-        runbar.grid_columnconfigure(1, weight=1)
-        self.run_btn = ctk.CTkButton(runbar, text="Start", width=140,
-                                     height=38,
+        runbar.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 6))
+        runbar.grid_columnconfigure(2, weight=1)
+        self.run_btn = ctk.CTkButton(runbar, text="Run", width=130, height=36,
                                      font=ctk.CTkFont(size=15, weight="bold"),
                                      command=self.start_processing)
-        self.run_btn.grid(row=0, column=0, padx=10, pady=10)
+        self.run_btn.grid(row=0, column=0, padx=10, pady=8)
+        self.stop_btn = ctk.CTkButton(runbar, text="Stop", width=80,
+                                      fg_color="gray30", hover_color="gray25",
+                                      command=self._request_stop, state="disabled")
+        self.stop_btn.grid(row=0, column=1, padx=4)
         self.progress = ctk.CTkProgressBar(runbar)
         self.progress.set(0)
-        self.progress.grid(row=0, column=1, sticky="ew", padx=10)
-        self.status_lbl = ctk.CTkLabel(runbar, text="Ready", width=120)
-        self.status_lbl.grid(row=0, column=2, padx=10)
+        self.progress.grid(row=0, column=2, sticky="ew", padx=10)
+        self.status_lbl = ctk.CTkLabel(runbar, text="Ready", width=130)
+        self.status_lbl.grid(row=0, column=3, padx=10)
 
         # ---- Log ----
         logframe = ctk.CTkFrame(self)
-        logframe.grid(row=3, column=0, columnspan=2, sticky="nsew",
-                      padx=12, pady=(0, 12))
-        self.grid_rowconfigure(3, weight=1)
-        logframe.grid_rowconfigure(1, weight=1)
+        logframe.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        self.grid_rowconfigure(3, weight=0)
         logframe.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(logframe, text="Log", anchor="w"
-                     ).grid(row=0, column=0, sticky="w", padx=10, pady=(8, 0))
+        ctk.CTkLabel(logframe, text="Log", anchor="w").grid(
+            row=0, column=0, sticky="w", padx=10, pady=(6, 0))
         self.log = ctk.CTkTextbox(logframe, height=120, wrap="word")
         self.log.grid(row=1, column=0, sticky="nsew", padx=10, pady=8)
         self.log.configure(state="disabled")
 
-        self._refresh_panels()
-        self._log(f"{about_info.APP_NAME} v{about_info.VERSION} ready. "
-                  "Enable one or more operations, then click Start.")
+    # ============================ Files tab ============================ #
+    def _build_files_tab(self, tab):
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(3, weight=1)
 
-    # ---- common (shared) options panel ----
-    def _build_common_panel(self):
-        p = ctk.CTkFrame(self.options_holder)
-        ctk.CTkLabel(p, text="Output location (shared by all operations)",
-                     font=ctk.CTkFont(size=13, weight="bold"), anchor="w"
-                     ).pack(fill="x", padx=10, pady=(10, 4))
-        ctk.CTkRadioButton(p, text="Beside each PDF",
-                           variable=self.dest, value="beside",
-                           command=self._refresh_panels
-                           ).pack(anchor="w", padx=16, pady=3)
-        ctk.CTkRadioButton(p, text="In one chosen output folder",
-                           variable=self.dest, value="folder",
-                           command=self._refresh_panels
-                           ).pack(anchor="w", padx=16, pady=3)
+        btnrow = ctk.CTkFrame(tab, fg_color="transparent")
+        btnrow.grid(row=0, column=0, sticky="ew", pady=(6, 2))
+        ctk.CTkButton(btnrow, text="Add PDF File(s)…", width=130,
+                      command=self.add_files).pack(side="left", padx=4)
+        ctk.CTkButton(btnrow, text="Add Folder…", width=110,
+                      command=self.add_folder).pack(side="left", padx=4)
+        self.recursive_var = tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(btnrow, text="Subfolders",
+                        variable=self.recursive_var).pack(side="left", padx=8)
+        ctk.CTkButton(btnrow, text="Select all", width=80,
+                      command=lambda: self._select_all_files(True)).pack(
+            side="left", padx=(18, 4))
+        ctk.CTkButton(btnrow, text="Deselect all", width=90,
+                      command=lambda: self._select_all_files(False)).pack(
+            side="left", padx=4)
+        ctk.CTkButton(btnrow, text="Clear list", width=80, fg_color="gray30",
+                      hover_color="gray25", command=self.clear_files).pack(
+            side="right", padx=4)
 
-        self.folder_row = ctk.CTkFrame(p, fg_color="transparent")
-        self.folder_row.pack(fill="x", padx=10, pady=(2, 8))
-        self.folder_row.grid_columnconfigure(0, weight=1)
-        self.out_entry = ctk.CTkEntry(self.folder_row,
-                                      textvariable=self.output_dir,
-                                      placeholder_text="Choose a folder\u2026")
-        self.out_entry.grid(row=0, column=0, sticky="ew")
-        ctk.CTkButton(self.folder_row, text="Browse\u2026", width=90,
-                      command=self.choose_output).grid(row=0, column=1,
-                                                       padx=(8, 0))
-        self.common_panel = p
+        filt = ctk.CTkFrame(tab, fg_color="transparent")
+        filt.grid(row=1, column=0, sticky="ew", pady=2)
+        ctk.CTkLabel(filt, text="Filter:").pack(side="left", padx=(4, 4))
+        ctk.CTkOptionMenu(filt, width=110, variable=self.filter_field,
+                          values=["Name", "Path", "Size ≥ MB",
+                                  "Pages ≥"]).pack(side="left")
+        ctk.CTkEntry(filt, textvariable=self.filter_value, width=180,
+                     placeholder_text="value…").pack(side="left", padx=6)
+        ctk.CTkButton(filt, text="Apply", width=70,
+                      command=self._render_files).pack(side="left", padx=2)
+        ctk.CTkButton(filt, text="Reset", width=64, fg_color="gray30",
+                      hover_color="gray25",
+                      command=self._reset_filter).pack(side="left", padx=2)
 
-    # ---- Modify-PDF sub-options ----
-    def _build_modify_panel(self):
-        p = ctk.CTkFrame(self.options_holder)
-        ctk.CTkLabel(p, text="Modify PDF \u2014 options",
-                     font=ctk.CTkFont(size=13, weight="bold"), anchor="w"
-                     ).pack(fill="x", padx=10, pady=(10, 2))
-        ctk.CTkRadioButton(
-            p, text="Remove images only (keep charts, tables, layout)",
-            variable=self.remove_mode, value="images"
-        ).pack(anchor="w", padx=16, pady=3)
-        ctk.CTkRadioButton(
-            p, text="Remove images + figures/charts (text-only result)",
-            variable=self.remove_mode, value="all"
-        ).pack(anchor="w", padx=16, pady=3)
+        hdr = ctk.CTkFrame(tab, fg_color=("gray85", "gray20"))
+        hdr.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+        for txt, w in (("✓", 36), ("File name", 360), ("Size", 90),
+                       ("Pages", 70), ("Lock", 70), ("", 40)):
+            ctk.CTkLabel(hdr, text=txt, width=w, anchor="w",
+                         font=ctk.CTkFont(size=11, weight="bold")).pack(
+                side="left", padx=4)
 
-        # Filename suffix (mandatory when writing beside the PDF).
-        self.suffix_row = ctk.CTkFrame(p, fg_color="transparent")
-        self.suffix_row.pack(fill="x", padx=10, pady=(6, 2))
-        ctk.CTkLabel(self.suffix_row, text="Add to file name (end):",
-                     anchor="w").pack(side="left", padx=(0, 6))
-        ctk.CTkEntry(self.suffix_row, textvariable=self.remove_suffix,
-                     width=120).pack(side="left")
-        self.suffix_hint = ctk.CTkLabel(
-            p, text="", anchor="w", justify="left", wraplength=270,
-            font=ctk.CTkFont(size=11), text_color="gray")
-        self.suffix_hint.pack(fill="x", padx=10, pady=(0, 8))
-        self.modify_panel = p
+        self.files_frame = ctk.CTkScrollableFrame(tab, label_text="")
+        self.files_frame.grid(row=3, column=0, sticky="nsew", pady=(0, 4))
+        self.files_count = ctk.CTkLabel(tab, text="Queued: 0  |  selected: 0",
+                                        anchor="w")
+        self.files_count.grid(row=4, column=0, sticky="w", padx=4, pady=(0, 4))
 
-    # ---- LaTeX/Markdown shared sub-options (math + naming) ----
-    def _build_math_mode_selector(self, parent):
-        box = ctk.CTkFrame(parent, fg_color=("gray92", "gray16"))
-        ctk.CTkLabel(box, text="Equation handling (LaTeX)",
-                     font=ctk.CTkFont(size=13, weight="bold"), anchor="w"
-                     ).pack(fill="x", padx=10, pady=(6, 0))
-        for label, value, expl in self.MATH_MODES:
-            row = ctk.CTkFrame(box, fg_color="transparent")
-            row.pack(fill="x", padx=8, pady=0)
-            rb = ctk.CTkRadioButton(row, text=label, variable=self.math_mode,
-                                    value=value)
-            rb.pack(side="left", anchor="w")
-            # Compact: short explanation as an info tooltip-style label to the
-            # right keeps height down while staying visible.
-            ctk.CTkLabel(box, text=expl, anchor="w", justify="left",
-                         wraplength=270, font=ctk.CTkFont(size=10),
-                         text_color="gray").pack(anchor="w", padx=(30, 4),
-                                                 pady=(0, 1))
-        ctk.CTkLabel(
-            box,
-            text="Trade-off: text = editable but approximate; images = exact. "
-                 "Default: LaTeX text.",
-            anchor="w", justify="left", wraplength=270,
-            font=ctk.CTkFont(size=10, slant="italic"),
-            text_color=("#0284c7", "#38bdf8")
-        ).pack(fill="x", padx=10, pady=(2, 6))
-        return box
+    def _reset_filter(self):
+        self.filter_value.set("")
+        self.filter_field.set("Name")
+        self._render_files()
 
-    def _build_latex_panel(self):
-        p = ctk.CTkFrame(self.options_holder)
-        ctk.CTkLabel(p, text="Convert \u2014 options (LaTeX / Markdown)",
-                     font=ctk.CTkFont(size=13, weight="bold"), anchor="w"
-                     ).pack(fill="x", padx=10, pady=(10, 2))
+    def _filtered_files(self):
+        field = self.filter_field.get()
+        val = self.filter_value.get().strip()
+        files = self.project["files"]
+        if not val:
+            return files
+        out = []
+        for e in files:
+            info = e.get("info", {})
+            try:
+                if field == "Name":
+                    if val.lower() in os.path.basename(e["path"]).lower():
+                        out.append(e)
+                elif field == "Path":
+                    if val.lower() in e["path"].lower():
+                        out.append(e)
+                elif field.startswith("Size"):
+                    sb = info.get("size_bytes")
+                    if sb is not None and sb >= float(val) * 1024 * 1024:
+                        out.append(e)
+                elif field.startswith("Pages"):
+                    pc = info.get("page_count")
+                    if pc is not None and pc >= int(float(val)):
+                        out.append(e)
+            except ValueError:
+                return files   # bad numeric input -> show everything
+        return out
 
-        self._build_math_mode_selector(p).pack(fill="x", padx=6, pady=(2, 6))
+    def _render_files(self):
+        for child in self.files_frame.winfo_children():
+            child.destroy()
+        self._file_rows = []
+        entries = self._filtered_files()
+        for e in entries:
+            info = e.get("info", {})
+            row = ctk.CTkFrame(self.files_frame, fg_color="transparent")
+            row.pack(fill="x", pady=1)
+            var = tk.BooleanVar(value=e.get("selected", True))
+            ctk.CTkCheckBox(row, text="", width=36, variable=var,
+                            command=lambda en=e, v=var: self._set_selected(en, v)
+                            ).pack(side="left", padx=4)
+            ctk.CTkLabel(row, text=os.path.basename(e["path"]), width=360,
+                         anchor="w").pack(side="left", padx=4)
+            ctk.CTkLabel(row, text=pdf_info.human_size(info.get("size_bytes")),
+                         width=90, anchor="w").pack(side="left", padx=4)
+            pc = info.get("page_count")
+            ctk.CTkLabel(row, text=("?" if pc is None else str(pc)), width=70,
+                         anchor="w").pack(side="left", padx=4)
+            locked = info.get("needs_password") and not info.get("opened")
+            ctk.CTkLabel(row, text=("\U0001F512" if locked else ""), width=70,
+                         anchor="w").pack(side="left", padx=4)
+            ctk.CTkButton(row, text="✕", width=30, fg_color="gray30",
+                          hover_color="#b91c1c",
+                          command=lambda en=e: self._remove_file(en)).pack(
+                side="left", padx=4)
+            self._file_rows.append((e, var))
+        self._update_file_count()
 
-        # Optional output-name prefix for the .tex / .md files.
-        pref_row = ctk.CTkFrame(p, fg_color="transparent")
-        pref_row.pack(fill="x", padx=10, pady=(2, 0))
-        ctk.CTkLabel(pref_row, text="Output name prefix (optional):",
-                     anchor="w").pack(side="left", padx=(0, 6))
-        ctk.CTkEntry(pref_row, textvariable=self.conv_prefix, width=140,
-                     placeholder_text="(none)").pack(side="left")
+    def _update_file_count(self):
+        total = len(self.project["files"])
+        sel = sum(1 for e in self.project["files"] if e.get("selected", True))
+        self.files_count.configure(text=f"Queued: {total}  |  selected: {sel}")
 
-        # Image-name prefix length.
-        plen_row = ctk.CTkFrame(p, fg_color="transparent")
-        plen_row.pack(fill="x", padx=10, pady=(6, 0))
-        ctk.CTkLabel(plen_row, text="Image name prefix length:",
-                     anchor="w").pack(side="left", padx=(0, 6))
-        ctk.CTkEntry(plen_row, textvariable=self.prefix_len, width=54).pack(
-            side="left")
-        ctk.CTkLabel(plen_row, text="letters from PDF name (default 9, 0=full)",
-                     text_color="gray", font=ctk.CTkFont(size=11)).pack(
-            side="left", padx=8)
-        ctk.CTkLabel(
-            p, text="Images are named like  Prefix_3_Fig-2.png  (unique number "
-                    "+ figure number), so multiple PDFs can share one folder.",
-            anchor="w", justify="left", wraplength=270, text_color="gray",
-            font=ctk.CTkFont(size=11)
-        ).pack(fill="x", padx=10, pady=(4, 8))
-        self.latex_panel = p
+    def _set_selected(self, entry, var):
+        entry["selected"] = bool(var.get())
+        self._update_file_count()
 
-    # ---- dynamic show/hide ----
-    def _selected_ops(self):
-        return [k for k in ("modify", "latex", "markdown")
-                if self.op_vars[k].get()]
+    def _select_all_files(self, value):
+        for e in self.project["files"]:
+            e["selected"] = value
+        self._render_files()
 
-    def _refresh_panels(self):
-        ops = self._selected_ops()
-        self.common_panel.grid_forget()
-        self.modify_panel.grid_forget()
-        self.latex_panel.grid_forget()
+    def _remove_file(self, entry):
+        self.project["files"] = [e for e in self.project["files"] if e is not entry]
+        self._after_files_changed()
 
-        # Left column: shared output options, then Modify-PDF options beneath.
-        left_row = 0
-        if ops:
-            self.common_panel.grid(row=left_row, column=0, sticky="new",
-                                   padx=(0, 5), pady=(0, 6))
-            left_row += 1
-        if self.dest.get() == "folder":
-            self.folder_row.pack(fill="x", padx=10, pady=(2, 8))
-        else:
-            self.folder_row.pack_forget()
-
-        if "modify" in ops:
-            self.modify_panel.grid(row=left_row, column=0, sticky="new",
-                                   padx=(0, 5), pady=(0, 6))
-            left_row += 1
-            self._update_suffix_hint()
-
-        # Right column: the taller convert options (LaTeX/Markdown).
-        if "latex" in ops or "markdown" in ops:
-            self.latex_panel.grid(row=0, column=1, rowspan=max(1, left_row),
-                                  sticky="new", padx=(5, 0), pady=(0, 6))
-
-    def _update_suffix_hint(self):
-        beside = self.dest.get() == "beside"
-        if beside:
-            self.suffix_hint.configure(
-                text="Required: writing beside each PDF, so a suffix is needed "
-                     "to avoid overwriting the original (e.g. \"_noimg\").")
-        else:
-            self.suffix_hint.configure(
-                text="Optional: outputs go to a separate folder, so the "
-                     "original is safe. Leave blank to keep the same name.")
-
-    # ----------------------------- list ops ------------------------------- #
-    def _refresh_list(self):
-        self.listbox.delete(0, tk.END)
-        for p in self.pdf_paths:
-            self.listbox.insert(tk.END, p)
-        self.count_label.configure(text=f"Queued: {len(self.pdf_paths)}")
-
-    def _add_paths(self, paths):
-        added = 0
-        for p in paths:
-            ap = os.path.abspath(p)
-            if ap not in self.pdf_paths:
-                self.pdf_paths.append(ap)
-                added += 1
-        self.pdf_paths.sort()
-        self._refresh_list()
-        return added
+    def clear_files(self):
+        self.project["files"] = []
+        self._after_files_changed()
 
     def add_files(self):
         paths = filedialog.askopenfilenames(
             title="Select PDF file(s)",
             filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")])
         if paths:
-            self._log(f"Added {self._add_paths(paths)} file(s).")
+            self._add_paths(paths)
 
     def add_folder(self):
         folder = filedialog.askdirectory(title="Select a folder with PDFs")
@@ -592,24 +522,560 @@ class App(ctk.CTk):
         if not found:
             messagebox.showinfo(about_info.APP_NAME, "No PDFs found there.")
             return
-        self._log(f"Found {len(found)} PDF(s); added "
-                  f"{self._add_paths(found)} new.")
+        self._add_paths(found)
 
-    def remove_selected(self):
-        for index in reversed(list(self.listbox.curselection())):
-            del self.pdf_paths[index]
-        self._refresh_list()
+    def _add_paths(self, paths):
+        existing = {os.path.abspath(e["path"]) for e in self.project["files"]}
+        added = 0
+        for p in paths:
+            ap = os.path.abspath(p)
+            if ap in existing:
+                continue
+            entry = projmod.make_file_entry(ap)
+            try:
+                scan = pdf_info.scan_pdf(ap)
+                entry["info"] = {
+                    "page_count": scan.get("page_count"),
+                    "size_bytes": scan.get("size_bytes"),
+                    "encrypted": scan.get("encrypted"),
+                    "needs_password": scan.get("needs_password"),
+                    "opened": scan.get("opened"),
+                    "permissions": scan.get("permissions"),
+                }
+            except Exception:
+                pass
+            self.project["files"].append(entry)
+            existing.add(ap)
+            added += 1
+        self._log(f"Added {added} file(s).")
+        self._after_files_changed()
 
-    def clear_list(self):
-        self.pdf_paths.clear()
-        self._refresh_list()
+    def _after_files_changed(self):
+        self._render_files()
+        self._rebuild_perfile_rows()
+        self._refresh_inspector_files()
 
-    def choose_output(self):
+    # ============================ Modify tab ============================ #
+    def _build_modify_tab(self, tab):
+        tab.grid_columnconfigure(0, weight=1)
+        ctk.CTkCheckBox(tab, text="Enable “Modify PDF” in the run",
+                        variable=self.modify_enabled,
+                        font=ctk.CTkFont(size=14, weight="bold")).grid(
+            row=0, column=0, sticky="w", padx=8, pady=(10, 6))
+
+        mode = ctk.CTkFrame(tab)
+        mode.grid(row=1, column=0, sticky="ew", padx=8, pady=4)
+        ctk.CTkLabel(mode, text="Run mode", font=ctk.CTkFont(weight="bold"),
+                     anchor="w").pack(fill="x", padx=10, pady=(8, 2))
+        ctk.CTkRadioButton(mode, text="Execute — write the modified PDF",
+                           variable=self.modify_mode, value="execute").pack(
+            anchor="w", padx=16, pady=2)
+        ctk.CTkRadioButton(
+            mode, text="Validate — don’t write; report what would "
+                       "change (see Inspector)",
+            variable=self.modify_mode, value="validate").pack(
+            anchor="w", padx=16, pady=2)
+
+        what = ctk.CTkFrame(tab)
+        what.grid(row=2, column=0, sticky="ew", padx=8, pady=4)
+        ctk.CTkLabel(what, text="What to remove",
+                     font=ctk.CTkFont(weight="bold"), anchor="w").pack(
+            fill="x", padx=10, pady=(8, 2))
+        ctk.CTkRadioButton(
+            what, text="Remove images only (keep charts, tables, layout)",
+            variable=self.remove_mode, value="images").pack(
+            anchor="w", padx=16, pady=2)
+        ctk.CTkRadioButton(
+            what, text="Remove images + figures/charts (text-only result)",
+            variable=self.remove_mode, value="all").pack(
+            anchor="w", padx=16, pady=2)
+
+        self._build_output_panel(tab, row=3, dest_var=self.dest_modify,
+                                 folder_var=self.folder_modify,
+                                 title="Output location (Modify PDF)",
+                                 suffix_var=self.suffix)
+
+        ctk.CTkLabel(
+            tab, text="More Modify options (search/replace text & image, remove "
+                      "restrictions, page ranges, AI image analysis) arrive in a "
+                      "later phase.", text_color="gray", justify="left",
+            wraplength=720, font=ctk.CTkFont(size=11, slant="italic")).grid(
+            row=4, column=0, sticky="w", padx=10, pady=(8, 4))
+
+    # ========================== Decompile tab ========================== #
+    def _build_decompile_tab(self, tab):
+        tab.grid_columnconfigure(0, weight=1)
+        ctk.CTkCheckBox(tab, text="Enable “Decompile to Text” in the run",
+                        variable=self.dec_enabled,
+                        font=ctk.CTkFont(size=14, weight="bold")).grid(
+            row=0, column=0, sticky="w", padx=8, pady=(10, 6))
+
+        fmt = ctk.CTkFrame(tab)
+        fmt.grid(row=1, column=0, sticky="ew", padx=8, pady=4)
+        ctk.CTkLabel(fmt, text="Output formats",
+                     font=ctk.CTkFont(weight="bold"), anchor="w").pack(
+            fill="x", padx=10, pady=(8, 2))
+        ctk.CTkCheckBox(fmt, text="LaTeX (.tex + Latex_Resource)",
+                        variable=self.fmt_latex).pack(anchor="w", padx=16, pady=2)
+        ctk.CTkCheckBox(fmt, text="Markdown (.md, full text)",
+                        variable=self.fmt_md).pack(anchor="w", padx=16, pady=2)
+
+        mm = ctk.CTkFrame(tab)
+        mm.grid(row=2, column=0, sticky="ew", padx=8, pady=4)
+        ctk.CTkLabel(mm, text="Equation handling (LaTeX)",
+                     font=ctk.CTkFont(weight="bold"), anchor="w").pack(
+            fill="x", padx=10, pady=(8, 2))
+        for label, value in self.MATH_MODES:
+            ctk.CTkRadioButton(mm, text=label, variable=self.math_mode,
+                               value=value).pack(anchor="w", padx=16, pady=1)
+
+        names = ctk.CTkFrame(tab)
+        names.grid(row=3, column=0, sticky="ew", padx=8, pady=4)
+        prow = ctk.CTkFrame(names, fg_color="transparent")
+        prow.pack(fill="x", padx=10, pady=(8, 2))
+        ctk.CTkLabel(prow, text="Output name prefix (optional):").pack(
+            side="left", padx=(0, 6))
+        ctk.CTkEntry(prow, textvariable=self.out_prefix, width=140,
+                     placeholder_text="(none)").pack(side="left")
+        lrow = ctk.CTkFrame(names, fg_color="transparent")
+        lrow.pack(fill="x", padx=10, pady=(2, 8))
+        ctk.CTkLabel(lrow, text="Image name prefix length:").pack(
+            side="left", padx=(0, 6))
+        ctk.CTkEntry(lrow, textvariable=self.prefix_len, width=54).pack(
+            side="left")
+        ctk.CTkLabel(lrow, text="letters from PDF name (default 9, 0=full)",
+                     text_color="gray").pack(side="left", padx=8)
+
+        self._build_output_panel(tab, row=4, dest_var=self.dest_dec,
+                                 folder_var=self.folder_dec,
+                                 title="Output location (Decompile to Text)")
+
+    # Shared output-destination panel (beside / chosen folder).
+    def _build_output_panel(self, tab, row, dest_var, folder_var, title,
+                            suffix_var=None):
+        p = ctk.CTkFrame(tab)
+        p.grid(row=row, column=0, sticky="ew", padx=8, pady=4)
+        ctk.CTkLabel(p, text=title, font=ctk.CTkFont(weight="bold"),
+                     anchor="w").pack(fill="x", padx=10, pady=(8, 2))
+        ctk.CTkRadioButton(p, text="Beside each input PDF",
+                           variable=dest_var, value="beside").pack(
+            anchor="w", padx=16, pady=2)
+        ctk.CTkRadioButton(p, text="In one chosen output folder",
+                           variable=dest_var, value="folder").pack(
+            anchor="w", padx=16, pady=2)
+        frow = ctk.CTkFrame(p, fg_color="transparent")
+        frow.pack(fill="x", padx=12, pady=(2, 6))
+        frow.grid_columnconfigure(0, weight=1)
+        ctk.CTkEntry(frow, textvariable=folder_var,
+                     placeholder_text="Choose a folder…").grid(
+            row=0, column=0, sticky="ew")
+        ctk.CTkButton(frow, text="Browse…", width=90,
+                      command=lambda v=folder_var: self._choose_folder(v)).grid(
+            row=0, column=1, padx=(8, 0))
+        if suffix_var is not None:
+            srow = ctk.CTkFrame(p, fg_color="transparent")
+            srow.pack(fill="x", padx=12, pady=(0, 8))
+            ctk.CTkLabel(srow, text="Add to file name (suffix):").pack(
+                side="left", padx=(0, 6))
+            ctk.CTkEntry(srow, textvariable=suffix_var, width=120).pack(
+                side="left")
+            ctk.CTkLabel(
+                srow, text="required when writing beside the PDF (never "
+                           "overwrites the original)",
+                text_color="gray", font=ctk.CTkFont(size=11)).pack(
+                side="left", padx=8)
+
+    def _choose_folder(self, var):
         folder = filedialog.askdirectory(title="Select output folder")
         if folder:
-            self.output_dir.set(folder)
+            var.set(folder)
 
-    # ------------------------------ logging ------------------------------- #
+    # ========================== Passwords tab ========================== #
+    def _build_passwords_tab(self, tab):
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_columnconfigure(1, weight=1)
+        tab.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            tab, text="Passwords are tried before processing each PDF: the "
+                      "file’s specific password first, then the shared "
+                      "pool. Files that stay locked are skipped (see Inspector).",
+            justify="left", wraplength=900, text_color="gray").grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4))
+
+        # Left: shared candidate pool.
+        left = ctk.CTkFrame(tab)
+        left.grid(row=1, column=0, sticky="nsew", padx=(8, 4), pady=4)
+        left.grid_rowconfigure(1, weight=1)
+        left.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(left, text="Shared password pool (one per line)",
+                     font=ctk.CTkFont(weight="bold"), anchor="w").grid(
+            row=0, column=0, sticky="w", padx=10, pady=(8, 2))
+        self.pool_box = ctk.CTkTextbox(left, wrap="none")
+        self.pool_box.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 8))
+
+        # Right: per-file passwords.
+        right = ctk.CTkFrame(tab)
+        right.grid(row=1, column=1, sticky="nsew", padx=(4, 8), pady=4)
+        right.grid_rowconfigure(1, weight=1)
+        right.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(right, text="Per-file password (optional)",
+                     font=ctk.CTkFont(weight="bold"), anchor="w").grid(
+            row=0, column=0, sticky="w", padx=10, pady=(8, 2))
+        self.perfile_frame = ctk.CTkScrollableFrame(right, label_text="")
+        self.perfile_frame.grid(row=1, column=0, sticky="nsew", padx=10,
+                                pady=(0, 8))
+
+        actions = ctk.CTkFrame(tab, fg_color="transparent")
+        actions.grid(row=2, column=0, columnspan=2, sticky="ew", padx=8,
+                     pady=(0, 6))
+        ctk.CTkButton(actions, text="Detect passwords now",
+                      command=self.detect_passwords).pack(side="left", padx=4)
+        ctk.CTkLabel(
+            actions, text="Password cracking (brute force / AI models) and the "
+                          "encrypted reuse pool arrive in a later phase. "
+                          "Recover only files you are authorised to open.",
+            text_color="gray", font=ctk.CTkFont(size=11)).pack(
+            side="left", padx=10)
+
+    def _rebuild_perfile_rows(self):
+        for child in self.perfile_frame.winfo_children():
+            child.destroy()
+        self._perfile_vars = {}
+        per_file = self.project["passwords"].get("per_file", {})
+        for e in self.project["files"]:
+            path = e["path"]
+            row = ctk.CTkFrame(self.perfile_frame, fg_color="transparent")
+            row.pack(fill="x", pady=1)
+            ctk.CTkLabel(row, text=os.path.basename(path), width=220,
+                         anchor="w").pack(side="left", padx=4)
+            var = tk.StringVar(value=per_file.get(path, ""))
+            ctk.CTkEntry(row, textvariable=var, width=160,
+                         placeholder_text="password…").pack(
+                side="left", padx=4)
+            self._perfile_vars[path] = var
+
+    def detect_passwords(self):
+        self._gather_ui_to_project()
+        n = 0
+        for e in self.project["files"]:
+            res = runner.resolve_password(e, self.project)
+            if res.get("error"):
+                self._log(f"  {os.path.basename(e['path'])}: error "
+                          f"({res['error']})")
+            elif not res["needs_password"]:
+                e["info"]["needs_password"] = False
+                self._log(f"  {os.path.basename(e['path'])}: not encrypted")
+            elif res["opened"]:
+                e["password"] = res["password"]
+                e["password_source"] = "provided/pool"
+                n += 1
+                self._log(f"  {os.path.basename(e['path'])}: unlocked "
+                          f"(password found)")
+            else:
+                self._log(f"  {os.path.basename(e['path'])}: LOCKED "
+                          "(no working password)")
+        self._log(f"Detect passwords: {n} file(s) unlocked.")
+        self._render_files()
+
+    # ========================== Inspector tab ========================== #
+    def _build_inspector_tab(self, tab):
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(1, weight=1)
+
+        top = ctk.CTkFrame(tab, fg_color="transparent")
+        top.grid(row=0, column=0, sticky="ew", pady=(6, 2))
+        ctk.CTkLabel(top, text="File:").pack(side="left", padx=(4, 4))
+        self.insp_menu = ctk.CTkOptionMenu(top, width=320,
+                                           variable=self.insp_file,
+                                           values=["(no files)"],
+                                           command=lambda _v: self._inspector_refresh())
+        self.insp_menu.pack(side="left", padx=4)
+        ctk.CTkRadioButton(top, text="Info", variable=self.insp_mode,
+                           value="info",
+                           command=self._inspector_refresh).pack(
+            side="left", padx=(16, 4))
+        ctk.CTkRadioButton(top, text="Preview", variable=self.insp_mode,
+                           value="preview",
+                           command=self._inspector_refresh).pack(
+            side="left", padx=4)
+        ctk.CTkButton(top, text="Refresh", width=80,
+                      command=self._inspector_refresh).pack(side="left", padx=12)
+
+        self.insp_body = ctk.CTkScrollableFrame(tab, label_text="")
+        self.insp_body.grid(row=1, column=0, sticky="nsew", pady=(0, 4))
+
+    def _refresh_inspector_files(self):
+        self._insp_paths = [e["path"] for e in self.project["files"]]
+        labels = [os.path.basename(p) for p in self._insp_paths] or ["(no files)"]
+        self.insp_menu.configure(values=labels)
+        if self._insp_paths:
+            if self.insp_file.get() not in labels:
+                self.insp_file.set(labels[0])
+        else:
+            self.insp_file.set("(no files)")
+
+    def _current_inspector_entry(self):
+        label = self.insp_file.get()
+        for e in self.project["files"]:
+            if os.path.basename(e["path"]) == label:
+                return e
+        return None
+
+    def _clear_insp_body(self):
+        for child in self.insp_body.winfo_children():
+            child.destroy()
+        self._preview_imgs = []
+
+    def _inspector_refresh(self):
+        self._clear_insp_body()
+        entry = self._current_inspector_entry()
+        if not entry:
+            ctk.CTkLabel(self.insp_body, text="Add files in the Files tab.",
+                         text_color="gray").pack(anchor="w", padx=10, pady=10)
+            return
+        if self.insp_mode.get() == "info":
+            self._show_inspector_info(entry)
+        else:
+            self._start_inspector_preview(entry)
+
+    def _show_inspector_info(self, entry):
+        path = entry["path"]
+        pw = entry.get("password")
+        scan = pdf_info.scan_pdf(path, password=pw)
+        entry["info"].update({
+            "page_count": scan.get("page_count"),
+            "size_bytes": scan.get("size_bytes"),
+            "encrypted": scan.get("encrypted"),
+            "needs_password": scan.get("needs_password"),
+            "opened": scan.get("opened"),
+            "permissions": scan.get("permissions"),
+        })
+
+        def line(label, value):
+            r = ctk.CTkFrame(self.insp_body, fg_color="transparent")
+            r.pack(fill="x", padx=8, pady=1)
+            ctk.CTkLabel(r, text=label, width=180, anchor="w",
+                         font=ctk.CTkFont(weight="bold")).pack(side="left")
+            ctk.CTkLabel(r, text=str(value), anchor="w", justify="left",
+                         wraplength=620).pack(side="left")
+
+        line("File name", scan["name"])
+        line("Path", path)
+        line("Size", scan["size_human"])
+        line("Encrypted", "Yes" if scan["encrypted"] else "No")
+        if scan["encrypted"]:
+            if scan["opened"]:
+                used = scan.get("password_used")
+                shown = pw or used
+                line("Password", f"known: “{shown}”" if shown is not None
+                     else "(empty user password)")
+            else:
+                line("Password", "UNKNOWN — file is locked (add it in the "
+                     "Passwords tab or run Detect)")
+        line("Pages", "?" if scan["page_count"] is None else scan["page_count"])
+        perms = scan.get("permissions")
+        if perms:
+            denied = [k for k, v in perms.items() if not v]
+            line("Restrictions", "none" if not denied
+                 else ", ".join(sorted(denied)) + " (not allowed)")
+
+        # Planned modifications (item 9 — validate/preview overview).
+        self._gather_ui_to_project()
+        jobs = runner.jobs_for(self.project)
+        ctk.CTkLabel(self.insp_body, text="Planned for this run",
+                     font=ctk.CTkFont(size=14, weight="bold"),
+                     anchor="w").pack(fill="x", padx=8, pady=(12, 2))
+        if not jobs:
+            line("Operations", "none enabled")
+        else:
+            line("Operations", ", ".join(runner.JOB_LABELS[j] for j in jobs))
+            if "modify" in jobs:
+                mode = self.modify_mode.get()
+                what = ("images + figures" if self.remove_mode.get() == "all"
+                        else "images only")
+                line("Modify", f"{mode}: remove {what}")
+
+    def _start_inspector_preview(self, entry):
+        ctk.CTkLabel(self.insp_body, text="Rendering preview…",
+                     text_color="gray").pack(anchor="w", padx=10, pady=10)
+        path = entry["path"]
+        pw = entry.get("password")
+        t = threading.Thread(target=self._preview_worker, args=(path, pw),
+                             daemon=True)
+        t.start()
+
+    def _preview_worker(self, path, password):
+        try:
+            scan = pdf_info.scan_pdf(path, password=password)
+            if not scan.get("opened"):
+                self.msg_queue.put(("ipreview_err",
+                                    "File is locked — add its password."))
+                return
+            pages = scan.get("page_count") or 0
+            self.msg_queue.put(("ipreview_start", pages))
+            for i in range(min(pages, self.PREVIEW_PAGE_CAP)):
+                png = pdf_info.render_page_png(path, i, password=password,
+                                               zoom=1.3)
+                self.msg_queue.put(("ipreview_img", (i + 1, png)))
+            self.msg_queue.put(("ipreview_done", pages))
+        except Exception as exc:  # noqa: BLE001
+            self.msg_queue.put(("ipreview_err", str(exc)))
+
+    # ============================ projects ============================= #
+    def _update_title(self):
+        name = self.proj_name.get() or "Untitled Project"
+        suffix = f"  —  {self.project_path}" if self.project_path else \
+            "  (unsaved)"
+        self.title(f"{about_info.APP_NAME} v{about_info.VERSION}  –  "
+                   f"{name}{suffix}")
+
+    def _apply_project_to_ui(self):
+        p = self.project
+        self.proj_name.set(p["project"].get("name", "Untitled Project"))
+        om = p["output"].get("modify", {})
+        self.dest_modify.set(om.get("dest", "beside"))
+        self.folder_modify.set(om.get("folder", ""))
+        self.suffix.set(om.get("suffix", "_noimg"))
+        od = p["output"].get("decompile", {})
+        self.dest_dec.set(od.get("dest", "beside"))
+        self.folder_dec.set(od.get("folder", ""))
+        mp = p.get("modify_pdf", {})
+        self.modify_enabled.set(mp.get("enabled", False))
+        self.modify_mode.set(mp.get("mode", "execute"))
+        self.remove_mode.set("all" if mp.get("remove_vector") else "images")
+        dc = p.get("decompile", {})
+        self.dec_enabled.set(dc.get("enabled", False))
+        fmts = dc.get("formats", ["latex", "markdown"])
+        self.fmt_latex.set("latex" in fmts)
+        self.fmt_md.set("markdown" in fmts)
+        self.math_mode.set(dc.get("math_mode", "text"))
+        self.prefix_len.set(str(dc.get("name_prefix_len", 9)))
+        self.out_prefix.set(dc.get("out_prefix", ""))
+        # Pool + per-file.
+        self.pool_box.delete("1.0", "end")
+        self.pool_box.insert("1.0", "\n".join(p["passwords"].get("pool", [])))
+        self._render_files()
+        self._rebuild_perfile_rows()
+        self._refresh_inspector_files()
+        self._inspector_refresh()
+        self._update_title()
+
+    def _gather_ui_to_project(self):
+        p = self.project
+        p["project"]["name"] = self.proj_name.get().strip() or "Untitled Project"
+        p["output"]["modify"] = {"dest": self.dest_modify.get(),
+                                 "folder": self.folder_modify.get().strip(),
+                                 "suffix": self.suffix.get().strip()}
+        p["output"]["decompile"] = {"dest": self.dest_dec.get(),
+                                    "folder": self.folder_dec.get().strip()}
+        p["modify_pdf"]["enabled"] = bool(self.modify_enabled.get())
+        p["modify_pdf"]["mode"] = self.modify_mode.get()
+        p["modify_pdf"]["remove_vector"] = self.remove_mode.get() == "all"
+        fmts = []
+        if self.fmt_latex.get():
+            fmts.append("latex")
+        if self.fmt_md.get():
+            fmts.append("markdown")
+        p["decompile"]["enabled"] = bool(self.dec_enabled.get())
+        p["decompile"]["formats"] = fmts
+        p["decompile"]["math_mode"] = self.math_mode.get()
+        try:
+            p["decompile"]["name_prefix_len"] = int(self.prefix_len.get().strip()
+                                                    or "9")
+        except ValueError:
+            p["decompile"]["name_prefix_len"] = 9
+        p["decompile"]["out_prefix"] = self.out_prefix.get().strip()
+        # Passwords.
+        pool = [ln.strip() for ln in
+                self.pool_box.get("1.0", "end").splitlines() if ln.strip()]
+        p["passwords"]["pool"] = pool
+        per_file = {}
+        for path, var in self._perfile_vars.items():
+            val = var.get().strip()
+            if val:
+                per_file[path] = val
+        p["passwords"]["per_file"] = per_file
+
+    def _confirm_discard(self):
+        return messagebox.askyesno(
+            about_info.APP_NAME,
+            "Discard the current project and its unsaved changes?")
+
+    def new_project(self):
+        if self.project["files"] and not self._confirm_discard():
+            return
+        self.project = projmod.new_project("Untitled Project")
+        self.project_path = None
+        self._apply_project_to_ui()
+        self._log("New project created.")
+
+    def open_project(self, path=None):
+        if path is None:
+            path = filedialog.askopenfilename(
+                title="Open project",
+                filetypes=[("PDF Ai Decompile project", "*.paidproj"),
+                           ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            self.project = projmod.load_project(path)
+            self.project_path = os.path.abspath(path)
+            self._apply_project_to_ui()
+            self._log(f"Opened project: {path}")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror(about_info.APP_NAME,
+                                 f"Could not open project:\n{exc}")
+
+    def save_project(self):
+        if not self.project_path:
+            return self.save_project_as()
+        self._gather_ui_to_project()
+        try:
+            projmod.save_project(self.project, self.project_path)
+            self._log(f"Saved: {self.project_path}")
+            self._update_title()
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror(about_info.APP_NAME,
+                                 f"Could not save project:\n{exc}")
+
+    def save_project_as(self):
+        self._gather_ui_to_project()
+        initial = (self.proj_name.get().strip() or "Untitled") + ".paidproj"
+        path = filedialog.asksaveasfilename(
+            title="Save project as", defaultextension=".paidproj",
+            initialfile=initial,
+            filetypes=[("PDF Ai Decompile project", "*.paidproj")])
+        if not path:
+            return
+        try:
+            self.project, out_path = projmod.save_project_as(self.project, path)
+            self.project_path = out_path
+            self.proj_name.set(self.project["project"]["name"])
+            self._log(f"Saved: {out_path}")
+            self._update_title()
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror(about_info.APP_NAME,
+                                 f"Could not save project:\n{exc}")
+
+    def _popup_recent(self):
+        menu = tk.Menu(self, tearoff=0)
+        recents = appconfig.recent_projects()
+        if not recents:
+            menu.add_command(label="(no recent projects)", state="disabled")
+        else:
+            for r in recents:
+                p = r.get("path", "")
+                menu.add_command(label=f"{r.get('name', 'Project')}  —  {p}",
+                                 command=lambda pp=p: self.open_project(pp))
+        try:
+            x = self.winfo_pointerx()
+            y = self.winfo_pointery()
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    # ============================ logging ============================== #
     def _log(self, text):
         self.log.configure(state="normal")
         self.log.insert("end", text + "\n")
@@ -619,175 +1085,78 @@ class App(ctk.CTk):
     def _open_about(self):
         AboutDialog(self)
 
-    # ---------------------------- processing ------------------------------ #
+    # ============================ processing =========================== #
     def start_processing(self):
-        if not self.pdf_paths:
+        self._gather_ui_to_project()
+        sel = runner.selected_files(self.project)
+        if not sel:
             messagebox.showwarning(about_info.APP_NAME,
-                                   "Add at least one PDF first.")
+                                   "Select at least one file in the Files tab.")
             return
-        ops = self._selected_ops()
-        if not ops:
+        jobs = runner.jobs_for(self.project)
+        if not jobs:
             messagebox.showerror(
                 about_info.APP_NAME,
-                "Please enable at least one operation (Modify PDF, Convert "
-                "to LaTeX, or Convert to Markdown) before starting.")
+                "Enable at least one activity: “Modify PDF” and/or "
+                "“Decompile to Text”.")
             return
-
-        dest = self.dest.get()
-        out_dir = self.output_dir.get().strip()
-        if dest == "folder":
-            if not out_dir:
+        # Output-folder validation.
+        if self.project["modify_pdf"]["enabled"]:
+            om = self.project["output"]["modify"]
+            if om["dest"] == "beside" and not om["suffix"]:
+                messagebox.showerror(
+                    about_info.APP_NAME,
+                    "Modify PDF writes beside each PDF: add a filename suffix "
+                    "so the original is not overwritten (e.g. \"_noimg\").")
+                return
+            if om["dest"] == "folder" and not om["folder"]:
                 messagebox.showwarning(about_info.APP_NAME,
-                                       "Choose an output folder, or switch to "
-                                       "\"Beside each PDF\".")
+                                       "Choose an output folder for Modify PDF.")
                 return
-            try:
-                os.makedirs(out_dir, exist_ok=True)
-            except Exception as exc:  # noqa: BLE001
-                messagebox.showerror(about_info.APP_NAME,
-                                     f"Cannot create output folder:\n{exc}")
+        if self.project["decompile"]["enabled"]:
+            od = self.project["output"]["decompile"]
+            if od["dest"] == "folder" and not od["folder"]:
+                messagebox.showwarning(
+                    about_info.APP_NAME,
+                    "Choose an output folder for Decompile to Text.")
+                return
+            if not self.project["decompile"]["formats"]:
+                messagebox.showwarning(
+                    about_info.APP_NAME,
+                    "Pick at least one Decompile format (LaTeX / Markdown).")
                 return
 
-        # --- Validate the Modify-PDF suffix rule (item 3) ---
-        remove_suffix = self.remove_suffix.get().strip()
-        if "modify" in ops and dest == "beside" and not remove_suffix:
-            messagebox.showerror(
-                about_info.APP_NAME,
-                "When 'Modify PDF' writes beside each PDF, you must add a "
-                "suffix to the file name so the original PDF is not "
-                "overwritten (e.g. \"_noimg\").")
-            return
-
-        # --- Validate image-name prefix length (LaTeX) ---
-        prefix_len = 9
-        if "latex" in ops:
-            raw = self.prefix_len.get().strip()
-            if raw:
-                try:
-                    prefix_len = int(raw)
-                    if prefix_len < 0 or prefix_len > 40:
-                        raise ValueError
-                except ValueError:
-                    messagebox.showerror(
-                        about_info.APP_NAME,
-                        "Image name prefix length must be a whole number "
-                        "between 0 and 40 (0 = use the full PDF name).")
-                    return
-
-        cfg = {
-            "ops": ops,
-            "dest": dest,
-            "out_dir": out_dir,
-            "remove_vector": self.remove_mode.get() == "all",
-            "remove_suffix": remove_suffix,
-            "math_mode": self.math_mode.get(),
-            "prefix_len": prefix_len,
-            "conv_prefix": self.conv_prefix.get().strip(),
-            "files": list(self.pdf_paths),
-        }
-
+        self._stop_flag = False
         self.run_btn.configure(state="disabled")
-        self.progress.configure(mode="determinate")
+        self.stop_btn.configure(state="normal")
         self.progress.set(0)
-        self.status_lbl.configure(text="Working\u2026")
-        self._log("-" * 60)
-        names = {"modify": "Modify PDF", "latex": "Convert to LaTeX",
-                 "markdown": "Convert to Markdown"}
-        self._log("Operations: " + ", ".join(names[o] for o in ops)
-                  + f"  |  {len(cfg['files'])} file(s)")
-        if "modify" in ops:
-            self._log("  Modify PDF — remove " + ("images + figures (text-only)"
-                      if cfg["remove_vector"] else "images only")
-                      + (f"  | suffix: '{remove_suffix}'" if remove_suffix
-                         else "  | suffix: (none)"))
-        if "latex" in ops:
-            mm = dict((v, l) for l, v, _ in self.MATH_MODES).get(
-                cfg["math_mode"], cfg["math_mode"])
-            self._log(f"  Equations: {mm}  | image prefix length: {prefix_len}")
-        if cfg["conv_prefix"]:
-            self._log(f"  Output name prefix: '{cfg['conv_prefix']}'")
-        self._log("  Output: " + ("beside each PDF" if dest == "beside"
-                                   else out_dir))
-
-        self.worker = threading.Thread(target=self._worker, args=(cfg,),
-                                       daemon=True)
+        self.status_lbl.configure(text="Working…")
+        self._log("-" * 64)
+        self._log(f"Run: {len(sel)} file(s) × "
+                  + ", ".join(runner.JOB_LABELS[j] for j in jobs))
+        self.worker = threading.Thread(target=self._run_worker, daemon=True)
         self.worker.start()
 
-    def _target_dir_for(self, src_path, cfg):
-        if cfg["dest"] == "beside":
-            return os.path.dirname(os.path.abspath(src_path))
-        return cfg["out_dir"]
+    def _run_worker(self):
+        def log(m):
+            self.msg_queue.put(("log", m))
 
-    def _conv_out_dir(self, base_dir, op_subfolder=None):
-        return base_dir
+        def prog(f):
+            self.msg_queue.put(("progress", f))
+        try:
+            res = runner.run(self.project, log=log, progress=prog,
+                             stop=lambda: self._stop_flag)
+            self.msg_queue.put(("done", res))
+        except Exception as exc:  # noqa: BLE001
+            self.msg_queue.put(("log", f"FATAL: {exc}"))
+            sys.stderr.write(traceback.format_exc() + "\n")
+            self.msg_queue.put(("done", {"ok": 0, "fail": 1, "skip": 0}))
 
-    def _worker(self, cfg):
-        ok = fail = 0
-        files = cfg["files"]
-        ops = cfg["ops"]
-        total = len(files) * max(1, len(ops))
-        step = 0
-        prefix = cfg.get("conv_prefix", "")
+    def _request_stop(self):
+        self._stop_flag = True
+        self.status_lbl.configure(text="Stopping…")
 
-        def named(stem):
-            return f"{prefix}{stem}" if prefix else stem
-
-        for path in files:
-            base = os.path.basename(path)
-            stem, ext = os.path.splitext(base)
-            target_dir = self._target_dir_for(path, cfg)
-            try:
-                os.makedirs(target_dir, exist_ok=True)
-            except Exception as exc:  # noqa: BLE001
-                self.msg_queue.put(("log", f"  ERROR {base}: {exc}"))
-                step += len(ops)
-                self.msg_queue.put(("progress", step / total))
-                fail += len(ops)
-                continue
-
-            for op in ops:
-                try:
-                    if op == "modify":
-                        suffix = cfg["remove_suffix"]
-                        out_name = f"{stem}{suffix}{ext}"
-                        out_path = os.path.join(target_dir, out_name)
-                        # Never overwrite the source.
-                        if os.path.abspath(out_path) == os.path.abspath(path):
-                            out_path = os.path.join(
-                                target_dir, f"{stem}{self.DEFAULT_REMOVE_SUFFIX}{ext}")
-                        removed, remaining = remove_images_from_pdf(
-                            path, out_path, remove_vector=cfg["remove_vector"])
-                        note = (f"{removed} image(s) removed" if remaining == 0
-                                else f"{removed} removed, {remaining} not located")
-                        self.msg_queue.put((
-                            "log", f"  OK  {base} -> "
-                            f"{os.path.basename(out_path)} ({note})"))
-                    elif op == "latex":
-                        tex = convert_pdf_to_latex(
-                            path, target_dir,
-                            math_mode=cfg.get("math_mode", "text"),
-                            name_prefix_len=cfg.get("prefix_len", 9),
-                            out_basename=named(stem))
-                        self.msg_queue.put((
-                            "log", f"  OK  {base} -> "
-                            f"{os.path.basename(tex)} (+ Latex_Resource)"))
-                    elif op == "markdown":
-                        md = convert_pdf_to_markdown(
-                            path, target_dir,
-                            math_mode=cfg.get("math_mode", "text"),
-                            name_prefix_len=cfg.get("prefix_len", 9),
-                            out_basename=named(stem))
-                        self.msg_queue.put((
-                            "log", f"  OK  {base} -> {os.path.basename(md)}"))
-                    ok += 1
-                except Exception as exc:  # noqa: BLE001
-                    fail += 1
-                    self.msg_queue.put(("log", f"  ERROR {base} [{op}]: {exc}"))
-                    sys.stderr.write(traceback.format_exc() + "\n")
-                step += 1
-                self.msg_queue.put(("progress", step / total))
-        self.msg_queue.put(("done", (ok, fail)))
-
+    # ============================ queue poll =========================== #
     def _poll_queue(self):
         try:
             while True:
@@ -797,22 +1166,65 @@ class App(ctk.CTk):
                 elif kind == "progress":
                     self.progress.set(payload)
                 elif kind == "done":
-                    ok, fail = payload
-                    self._log("-" * 60)
-                    self._log(f"Done. {ok} succeeded, {fail} failed.")
-                    self.run_btn.configure(state="normal")
-                    self.status_lbl.configure(
-                        text="Done" if fail == 0 else "Done (errors)")
-                    if fail == 0:
-                        messagebox.showinfo(about_info.APP_NAME,
-                                            f"Finished. {ok} output(s) created.")
-                    else:
-                        messagebox.showwarning(
-                            about_info.APP_NAME,
-                            f"Finished: {ok} ok, {fail} failed. See the log.")
+                    self._on_run_done(payload)
+                elif kind == "ipreview_start":
+                    self._clear_insp_body()
+                    if payload > self.PREVIEW_PAGE_CAP:
+                        ctk.CTkLabel(
+                            self.insp_body,
+                            text=f"Showing first {self.PREVIEW_PAGE_CAP} of "
+                                 f"{payload} pages.", text_color="gray").pack(
+                            anchor="w", padx=8, pady=4)
+                elif kind == "ipreview_img":
+                    self._add_preview_image(*payload)
+                elif kind == "ipreview_done":
+                    pass
+                elif kind == "ipreview_err":
+                    self._clear_insp_body()
+                    ctk.CTkLabel(self.insp_body, text=payload,
+                                 text_color="#f87171").pack(anchor="w",
+                                                            padx=10, pady=10)
         except queue.Empty:
             pass
         self.after(120, self._poll_queue)
+
+    def _add_preview_image(self, page_no, png_bytes):
+        try:
+            from PIL import Image
+            img = Image.open(io.BytesIO(png_bytes))
+            w, h = img.size
+            scale = min(1.0, 760 / max(1, w))
+            cimg = ctk.CTkImage(light_image=img,
+                                size=(int(w * scale), int(h * scale)))
+            self._preview_imgs.append(cimg)
+            ctk.CTkLabel(self.insp_body, text=f"Page {page_no}",
+                         text_color="gray").pack(anchor="w", padx=8, pady=(8, 0))
+            ctk.CTkLabel(self.insp_body, image=cimg, text="").pack(
+                anchor="w", padx=8, pady=2)
+        except Exception:
+            pass
+
+    def _on_run_done(self, res):
+        self._log("-" * 64)
+        self._log(f"Finished. {res['ok']} ok, {res['fail']} failed, "
+                  f"{res['skip']} skipped.")
+        self.run_btn.configure(state="normal")
+        self.stop_btn.configure(state="disabled")
+        self.status_lbl.configure(
+            text="Done" if res["fail"] == 0 else "Done (errors)")
+        self._render_files()   # password_source / discovered values may have changed
+        if res["fail"] == 0:
+            messagebox.showinfo(about_info.APP_NAME,
+                                f"Finished. {res['ok']} output(s) created, "
+                                f"{res['skip']} skipped.")
+        else:
+            messagebox.showwarning(
+                about_info.APP_NAME,
+                f"Finished with errors: {res['ok']} ok, {res['fail']} failed, "
+                f"{res['skip']} skipped. See the log.")
+
+    def _on_close(self):
+        self.destroy()
 
 
 def main():

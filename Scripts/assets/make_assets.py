@@ -178,7 +178,7 @@ def make_splash(path, version, w=640, h=380):
         y += 22
 
     y += 12
-    chips = ["Modify PDF", "PDF \u2192 LaTeX", "PDF \u2192 Markdown"]
+    chips = ["Projects", "Modify PDF", "Decompile to Text"]
     cx = 30
     for c in chips:
         tw = d.textlength(c, font=f_tiny)

@@ -9,8 +9,8 @@ update.
 """
 
 APP_NAME = "PDF Ai Decompile"
-TAGLINE = "Decompile PDFs \u00b7 LaTeX \u00b7 Markdown \u00b7 Modify PDF"
-VERSION = "3.1"
+TAGLINE = "Projects \u00b7 Modify PDF \u00b7 Decompile to LaTeX / Markdown"
+VERSION = "4.0"
 
 # --------------------------------------------------------------------------- #
 #  Authors  (single source of truth)                                          #
@@ -53,41 +53,45 @@ DESCRIPTION = (
 )
 
 FEATURES = [
-    "Run several operations at once: enable any combination of Modify PDF, "
-    "Convert to LaTeX and Convert to Markdown \u2014 each runs on every PDF.",
-    "Modify PDF \u2014 remove images (raster only): keeps charts, tables, "
-    "equations and the exact text layout. Clears AI image-upload limits.",
-    "Modify PDF \u2014 remove images + figures: also removes vector "
-    "plots/diagrams for a clean text-only PDF.",
-    "Convert PDF \u2192 LaTeX \u2014 one compilable IEEEtran .tex per PDF, with "
-    "title, authors, abstract, index terms, all sections/subsections, "
-    "figure & table captions, \\cite{} citations and an embedded bibliography.",
-    "Choose how equations are handled: rebuild as LaTeX text, inline-only, "
-    "hybrid (text + equation images), or exact equation images \u2014 pick what "
-    "suits each paper.",
-    "Configurable short image names (e.g. Prefix_3_Fig-2.png): a few letters "
-    "from the PDF name + a unique number + the figure number, so several PDFs "
+    "Projects: save everything you set up (file list + selection, options, "
+    "output locations, passwords) into a single .paidproj file and resume "
+    "later \u2014 New / Open / Save / Save As / Open Recent.",
+    "Two activity categories you can run together: \"Modify PDF\" (remove "
+    "images, or images + vector figures) and \"Decompile to Text\" (LaTeX "
+    "and/or Markdown).",
+    "Files tab: add files or whole folders, tick exactly which to process "
+    "(Select all / Deselect all), and filter by name / path / size / page "
+    "count.",
+    "Per-category output: write beside each PDF (Modify PDF uses a mandatory "
+    "suffix so the original is never overwritten) or into one chosen folder.",
+    "Passwords tab: give a shared pool of candidate passwords and/or a "
+    "specific password per file; protected PDFs are unlocked automatically "
+    "before processing, and locked files are skipped and flagged.",
+    "Inspector tab: file name, size, page count, encryption, recovered "
+    "password and permission restrictions, plus a scrollable page preview.",
+    "Decompile \u2192 LaTeX: one compilable IEEEtran .tex per PDF (title, authors, "
+    "abstract, sections, figure & table captions, \\cite{} and bibliography) "
+    "with four equation modes; or \u2192 Markdown (full text, no images).",
+    "Configurable short image names (e.g. Prefix_3_Fig-2.png) so several PDFs "
     "can safely share one Latex_Resource folder.",
-    "Convert PDF \u2192 Markdown \u2014 full text, no images, ideal for feeding "
-    "to AI tools.",
-    "Figures (raster images and vector plots) extracted to a shared "
-    "\"Latex_Resource\" folder with unique, conflict-free names.",
-    "Batch processing: add many PDFs or whole folders at once.",
-    "Output beside each PDF, or all to one chosen folder.",
 ]
 
 HOW_TO = [
-    "1. Add the PDF(s): use \"Add PDF File(s)\u2026\" or \"Add Folder\u2026\".",
-    "2. Enable one or more Operations (required): Modify PDF, Convert to "
-    "LaTeX and/or Convert to Markdown. You can turn on any combination.",
-    "3. Set the shared output location (beside each PDF, or one folder), then "
-    "the sub-options for each enabled operation.",
-    "4. If Modify PDF writes beside each PDF, a filename suffix (e.g. "
-    "\"_noimg\") is required so the original PDF is not overwritten. When "
-    "writing to a separate folder the suffix is optional.",
-    "5. Click the Start button. Progress and a log appear at the bottom.",
-    "6. For LaTeX output, upload the .tex and its \"Latex_Resource\" folder to "
-    "Overleaf (or compile locally with pdfLaTeX).",
+    "1. Project: start a New project (or Open a recent one), name it in the "
+    "header, and use Save / Save As to write a .paidproj file.",
+    "2. Files tab: \"Add PDF File(s)\u2026\" or \"Add Folder\u2026\", then tick which "
+    "files to process (Select all / Deselect all, or filter by "
+    "name/size/pages).",
+    "3. Passwords tab (only if some PDFs are protected): add a shared password "
+    "pool and/or a per-file password; \"Detect passwords now\" checks them.",
+    "4. Modify PDF tab: enable it, pick Execute or Validate, choose what to "
+    "remove, and set the output location (a suffix is required when writing "
+    "beside the PDF).",
+    "5. Decompile to Text tab: enable it, pick LaTeX and/or Markdown, the "
+    "equation mode, and the output location.",
+    "6. Click Run. Progress and a log appear at the bottom; Save the project "
+    "to keep your setup and any recovered passwords. For LaTeX, upload the "
+    ".tex and its \"Latex_Resource\" folder to Overleaf (or compile locally).",
 ]
 
 NOTES = [
@@ -100,11 +104,23 @@ NOTES = [
     "In many IEEE papers the numeric table grids are drawn as vector graphics "
     "(not selectable text), so those values are captured as figure images "
     "rather than as text.",
+    "Passwords: only unlock PDFs you are authorised to open — the password "
+    "tools are a local \"forgot my password\" helper. Automated password "
+    "cracking (brute force / AI models) and AI image analysis are planned for "
+    "a later release.",
 ]
 
 # Revision history (newest first). Shown in the About dialog and documented in
 # Doc/SKILL.md.
 REVISION_HISTORY = [
+    ("4.0", "Reorganised into a project-based, tabbed workflow. Projects "
+            "(.paidproj) save all settings so work can be resumed; menu for "
+            "New / Open / Save / Save As / Open Recent. Two activity "
+            "categories — \"Modify PDF\" and \"Decompile to Text\" "
+            "(LaTeX / Markdown) — each with its own output destination. New "
+            "Files tab (multi-select + filter), Passwords tab (per-file + "
+            "shared pool, used to open protected PDFs), and an Inspector tab "
+            "(file info, permissions and a page preview)."),
     ("3.1", "Renamed the image-removal operation to \"Modify PDF\" so the "
             "feature is easier to understand — it still removes images "
             "(and optionally vector figures) while keeping text and layout. "

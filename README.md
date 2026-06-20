@@ -4,17 +4,25 @@
 
 **PDF Ai Decompile** is a small, cross-platform desktop tool that takes PDF
 papers and turns them back into formats that are easy for AI tools (and humans)
-to work with. It can:
+to work with. It is organised around **projects** (a tabbed workflow you can
+save and resume) and two activity categories:
 
 * **Modify PDF** — remove images from a PDF while keeping all text and the
-  exact layout (optionally remove vector figures too, for a text-only PDF),
-* **Convert a PDF to LaTeX** — one compilable IEEE `.tex` file per PDF, plus a
-  shared `Latex_Resource` folder of extracted figures, or
-* **Convert a PDF to Markdown** — full text, no images.
+  exact layout (optionally remove vector figures too, for a text-only PDF), and
+* **Decompile to Text** — rebuild a PDF into **LaTeX** (one compilable IEEE
+  `.tex` per PDF plus a shared `Latex_Resource` folder) and/or **Markdown**
+  (full text, no images).
 
-Any combination of these can run at once. The LaTeX and Markdown outputs are
-designed so that **any AI tool can read the full paper without processing the
-PDF**, and the cleaned PDFs upload without hitting image limits.
+Both categories can run together on the files you select. A **Passwords** tab
+unlocks protected PDFs (per-file or a shared pool) before processing, and an
+**Inspector** tab shows file info, permissions and a page preview. The LaTeX and
+Markdown outputs are designed so that **any AI tool can read the full paper
+without processing the PDF**, and the cleaned PDFs upload without hitting image
+limits.
+
+Everything you set up — the file list and selection, options, output locations
+and passwords — is saved into a single `.paidproj` project file so you can pick
+up where you left off (Project ▸ New / Open / Save / Save As / Open Recent).
 
 Built with [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter).
 Authors: **Jerry James & Nisha** · Org: **Open-Tools-Development** · License: **GPL-3.0**.
@@ -40,6 +48,10 @@ PDF-Ai-Decompile/
     │   └─ about_info.py         Identity, features, how-to, revision history
     ├─ backend/               Backend logic (PDF parsing & conversion)
     │   ├─ __init__.py
+    │   ├─ appconfig.py          Per-user config + recent projects
+    │   ├─ project.py            Project file (.paidproj) save/load/schema
+    │   ├─ pdf_info.py           Scan / password / page-render (Inspector)
+    │   ├─ runner.py             Headless project runner (passwords → jobs)
     │   ├─ pdf_common.py         Shared parser (structure, escaping, images)
     │   ├─ pdf_remove.py         Image-removal engine (UI: "Modify PDF")
     │   ├─ pdf_to_latex.py       PDF → LaTeX renderer (4 equation modes)
@@ -78,17 +90,24 @@ python3 run_app.py
 
 ## Using the tool
 
-1. **Add PDFs** — *Add PDF File(s)…* or *Add Folder…* (optionally *Subfolders*).
-2. **Enable one or more Operations** (required — any combination, each runs on
-   every PDF): Modify PDF, Convert → LaTeX, Convert → Markdown.
-3. **Set the shared output location** — *Beside each PDF* or *In one chosen
-   output folder* — then the sub-options for each enabled operation. Options
-   common to several operations (output location, output-name prefix) are shown
-   once and shared.
-4. **Filename suffix rule (Modify PDF):** when output goes *beside each PDF*,
-   a filename suffix (default `_noimg`) is **required** so the original PDF is
-   never overwritten. To a *separate folder* it is **optional**.
-5. Click **Start**.
+1. **Project** — start a **New** project (or **Open** a recent one) and give it a
+   name in the header. **Save** / **Save As** writes a `.paidproj` file holding
+   all of the below so you can resume later.
+2. **Files tab** — *Add PDF File(s)…* or *Add Folder…* (optionally
+   *Subfolders*), then tick which files to process (*Select all* / *Deselect
+   all*, or filter by name / path / size / pages).
+3. **Passwords tab** (only if some PDFs are protected) — add a shared password
+   pool and/or a per-file password; *Detect passwords now* checks them. Locked
+   files are skipped and flagged.
+4. **Modify PDF tab** — enable it, choose *Execute* or *Validate*, what to
+   remove, and the output location. When writing *beside each PDF* a filename
+   suffix (default `_noimg`) is **required** so the original is never
+   overwritten; to a *separate folder* it is optional.
+5. **Decompile to Text tab** — enable it, pick **LaTeX** and/or **Markdown**, the
+   equation mode, and the output location.
+6. **Inspector tab** — pick a file to see its info, permissions and a page
+   preview.
+7. Click **Run**. Progress and a log appear at the bottom.
 
 For LaTeX output, upload the `.tex` **and** its `Latex_Resource` folder to
 Overleaf, or compile locally with `pdflatex` (two passes).
