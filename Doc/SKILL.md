@@ -476,10 +476,11 @@ re-insert), search-&-replace **image** (similarity match → delete/replace),
 **AI image analysis** (captions via `backend.models`), **page range** to process
 and **pages to keep**. All best-effort (a PDF is not a word processor).
 
-### 13.4 Decompile to Text (IMPLEMENTED — items 4, 5)
+### 13.4 Decompile to Text (IMPLEMENTED — items 4, 5, 11)
 Pick any of LaTeX / Markdown; same output-dest model (beside / chosen folder).
 Reuses the existing `pdf_to_latex` / `pdf_to_markdown` backends via
-`backend.runner`.
+`backend.runner`. A **page range** (`decompile.page_range`) is honoured by
+converting a page-subset copy first (`pdf_modify.extract_pages`).
 
 ### 13.5 Passwords tab + Inspector (IMPLEMENTED — items 7, 8, 9, 10)
 DONE: per-file password OR a shared candidate pool; `runner.resolve_password`
@@ -512,8 +513,9 @@ configured engine. Re-evaluation is just running it again.
 `pw-markov-builtin` (order-2 char Markov trained on the user's samples) and
 `pw-rules-builtin` (case/leet/suffix mangling). The image captioner uses a real
 HF model (BLIP) if `transformers`+`torch` and weights are present, else a
-heuristic. Users add their own password generator as a `.py` exposing
-`generate(hints)`. Design notes that shaped this:
+heuristic. Users add their own **password** generator as a `.py` exposing
+`generate(hints)`, or their own **image** model (a local HF dir or repo id) via
+`image_ai_analysis.user_model`. Design notes that shaped this:
 - **Delivery: download-on-demand** (recommended) into the project assets folder
   (or a shared user cache), from a small **curated manifest** (id, source, URL,
   sha256), verified on download; the tool runs fully without them (falls back to

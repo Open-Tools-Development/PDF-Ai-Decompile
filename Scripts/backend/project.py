@@ -79,7 +79,8 @@ def default_project(name: str = "Untitled Project") -> dict:
             "remove_restrictions_and_password": False,
             "search_replace_text": [],    # [{find, replace, regex}]
             "search_replace_image": [],   # [{image, match_pct, action, replacement}]
-            "image_ai_analysis": {"enabled": False, "model": None},
+            "image_ai_analysis": {"enabled": False, "model": "img-blip-base",
+                                  "user_model": ""},
             "page_range": "all",          # "all" | "1-3,5" (process which pages)
             "keep_pages": "all",          # "all" | "1-3,5" (pages kept in output)
         },
@@ -287,7 +288,8 @@ def _merge_defaults(data: dict) -> dict:
 
 def project_assets_path(project: dict, project_file_path: str) -> str:
     """Absolute path to the project's asset folder (models, etc.)."""
-    base_dir = os.path.dirname(os.path.abspath(project_file_path))
+    base_dir = (os.path.dirname(os.path.abspath(project_file_path))
+                if project_file_path else os.getcwd())
     rel = project.get("project", {}).get("assets_dir") or \
         name_to_folder(project.get("project", {}).get("name", "project"))
     return os.path.normpath(os.path.join(base_dir, rel))

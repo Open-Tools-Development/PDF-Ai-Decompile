@@ -216,8 +216,10 @@ class App(ctk.CTk):
         self.remove_restrictions = tk.BooleanVar(value=False)
         self.ai_analysis_enabled = tk.BooleanVar(value=False)
         self.ai_model = tk.StringVar(value="img-blip-base")
+        self.ai_user_model = tk.StringVar(value="")
         self.process_pages = tk.StringVar(value="all")
         self.keep_pages = tk.StringVar(value="all")
+        self.dec_pages = tk.StringVar(value="all")   # Decompile page range
         self._text_rep_rows = []     # (find_var, replace_var, regex_var)
         self._img_rep_rows = []      # (image_var, pct_var, action_var, repl_var)
 
@@ -748,6 +750,15 @@ class App(ctk.CTk):
         ctk.CTkButton(row, text="Download", width=90,
                       command=self._download_selected_image_model).pack(
             side="left", padx=8)
+        urow = ctk.CTkFrame(f, fg_color="transparent")
+        urow.pack(fill="x", padx=14, pady=(0, 4))
+        ctk.CTkLabel(urow, text="Your own model (HF id or local folder):").pack(
+            side="left", padx=(0, 6))
+        ctk.CTkEntry(urow, textvariable=self.ai_user_model, width=240,
+                     placeholder_text="(optional)").pack(side="left")
+        ctk.CTkButton(urow, text="…", width=28,
+                      command=lambda: self._choose_folder(self.ai_user_model)
+                      ).pack(side="left", padx=4)
         ctk.CTkLabel(f, text="Downloaded on demand. Without the model "
                              "(transformers/torch), a heuristic description is "
                              "used.", text_color="gray",
@@ -814,12 +825,20 @@ class App(ctk.CTk):
         ctk.CTkEntry(prow, textvariable=self.out_prefix, width=140,
                      placeholder_text="(none)").pack(side="left")
         lrow = ctk.CTkFrame(names, fg_color="transparent")
-        lrow.pack(fill="x", padx=10, pady=(2, 8))
+        lrow.pack(fill="x", padx=10, pady=(2, 4))
         ctk.CTkLabel(lrow, text="Image name prefix length:").pack(
             side="left", padx=(0, 6))
         ctk.CTkEntry(lrow, textvariable=self.prefix_len, width=54).pack(
             side="left")
         ctk.CTkLabel(lrow, text="letters from PDF name (default 9, 0=full)",
+                     text_color="gray").pack(side="left", padx=8)
+        prow2 = ctk.CTkFrame(names, fg_color="transparent")
+        prow2.pack(fill="x", padx=10, pady=(2, 8))
+        ctk.CTkLabel(prow2, text="Pages to include:").pack(side="left",
+                                                           padx=(0, 6))
+        ctk.CTkEntry(prow2, textvariable=self.dec_pages, width=160).pack(
+            side="left")
+        ctk.CTkLabel(prow2, text="all = every page, or e.g. 1-3,5",
                      text_color="gray").pack(side="left", padx=8)
 
         self._build_output_panel(tab, row=4, dest_var=self.dest_dec,
@@ -993,6 +1012,12 @@ class App(ctk.CTk):
             self.user_model_path.set(path)
 
     def _download_selected_image_model(self):
+        if not self.project_path:
+            messagebox.showinfo(
+                about_info.APP_NAME,
+                "Save the project first — models are downloaded into the "
+                "project's folder.")
+            return
         self._gather_ui_to_project()
         mid = self.ai_model.get()
 
@@ -1058,6 +1083,7 @@ class App(ctk.CTk):
             elif res["opened"]:
                 e["password"] = res["password"]
                 e["password_source"] = "provided/pool"
+                runner._record_password(res["password"])
                 n += 1
                 self._log(f"  {os.path.basename(e['path'])}: unlocked "
                           f"(password found)")
@@ -1154,14 +1180,20 @@ class App(ctk.CTk):
         line("Size", scan["size_human"])
         line("Encrypted", "Yes" if scan["encrypted"] else "No")
         if scan["encrypted"]:
+            src = entry.get("password_source")
             if scan["opened"]:
                 used = scan.get("password_used")
                 shown = pw or used
-                line("Password", f"known: “{shown}”" if shown is not None
-                     else "(empty user password)")
+                note = f"  (source: {src})" if src and src != "none" else ""
+                line("Password", (f"known: “{shown}”" if shown not in (None, "")
+                                  else "(empty user password)") + note)
+            elif self.crack_enabled.get():
+                line("Password", "UNKNOWN — locked. Cracking is enabled: run "
+                     "“Crack now” (Passwords tab) or Run; progress appears in "
+                     "the Log below.")
             else:
                 line("Password", "UNKNOWN — file is locked (add it in the "
-                     "Passwords tab or run Detect)")
+                     "Passwords tab, run Detect, or enable cracking).")
         line("Pages", "?" if scan["page_count"] is None else scan["page_count"])
         perms = scan.get("permissions")
         if perms:
@@ -1180,10 +1212,26 @@ class App(ctk.CTk):
         else:
             line("Operations", ", ".join(runner.JOB_LABELS[j] for j in jobs))
             if "modify" in jobs:
-                mode = self.modify_mode.get()
-                what = ("images + figures" if self.remove_mode.get() == "all"
-                        else "images only")
-                line("Modify", f"{mode}: remove {what}")
+                mp = self.project["modify_pdf"]
+                line("Modify mode", mp.get("mode", "execute"))
+                bits = []
+                if mp.get("remove_images", True):
+                    bits.append("images + figures" if mp.get("remove_vector")
+                                else "images")
+                if mp.get("remove_restrictions_and_password"):
+                    bits.append("restrictions + password")
+                if mp.get("search_replace_text"):
+                    bits.append(f"{len(mp['search_replace_text'])} text rule(s)")
+                if mp.get("search_replace_image"):
+                    bits.append(f"{len(mp['search_replace_image'])} image rule(s)")
+                if (mp.get("image_ai_analysis") or {}).get("enabled"):
+                    bits.append("AI image analysis")
+                line("Modify actions", ", ".join(bits) or "none")
+                line("Modify pages", f"apply {mp.get('page_range', 'all')}, "
+                                     f"keep {mp.get('keep_pages', 'all')}")
+            if "latex" in jobs or "markdown" in jobs:
+                line("Decompile pages",
+                     self.project["decompile"].get("page_range", "all"))
 
     def _start_inspector_preview(self, entry):
         ctk.CTkLabel(self.insp_body, text="Rendering preview…",
@@ -1238,6 +1286,7 @@ class App(ctk.CTk):
         ai = mp.get("image_ai_analysis", {}) or {}
         self.ai_analysis_enabled.set(ai.get("enabled", False))
         self.ai_model.set(ai.get("model") or "img-blip-base")
+        self.ai_user_model.set(ai.get("user_model", "") or "")
         self.process_pages.set(mp.get("page_range", "all") or "all")
         self.keep_pages.set(mp.get("keep_pages", "all") or "all")
         self._set_text_reps(mp.get("search_replace_text", []) or [])
@@ -1251,6 +1300,7 @@ class App(ctk.CTk):
         self.math_mode.set(dc.get("math_mode", "text"))
         self.prefix_len.set(str(dc.get("name_prefix_len", 9)))
         self.out_prefix.set(dc.get("out_prefix", ""))
+        self.dec_pages.set(dc.get("page_range", "all") or "all")
         # Pool + per-file.
         self.pool_box.delete("1.0", "end")
         self.pool_box.insert("1.0", "\n".join(p["passwords"].get("pool", [])))
@@ -1274,8 +1324,10 @@ class App(ctk.CTk):
         mpf["remove_vector"] = self.remove_mode.get() == "all"
         mpf["remove_restrictions_and_password"] = bool(
             self.remove_restrictions.get())
-        mpf["image_ai_analysis"] = {"enabled": bool(self.ai_analysis_enabled.get()),
-                                    "model": self.ai_model.get()}
+        mpf["image_ai_analysis"] = {
+            "enabled": bool(self.ai_analysis_enabled.get()),
+            "model": self.ai_model.get(),
+            "user_model": self.ai_user_model.get().strip()}
         mpf["page_range"] = self.process_pages.get().strip() or "all"
         mpf["keep_pages"] = self.keep_pages.get().strip() or "all"
         mpf["search_replace_text"] = self._gather_text_reps()
@@ -1295,6 +1347,7 @@ class App(ctk.CTk):
         except ValueError:
             p["decompile"]["name_prefix_len"] = 9
         p["decompile"]["out_prefix"] = self.out_prefix.get().strip()
+        p["decompile"]["page_range"] = self.dec_pages.get().strip() or "all"
         # Passwords.
         pool = [ln.strip() for ln in
                 self.pool_box.get("1.0", "end").splitlines() if ln.strip()]

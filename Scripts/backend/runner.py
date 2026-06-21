@@ -212,9 +212,12 @@ def run(project: dict, *, log=None, progress=None, stop=None,
     analyzer = None
     mcfg = project.get("modify_pdf", {})
     if "modify" in jobs and (mcfg.get("image_ai_analysis") or {}).get("enabled"):
-        mid = (mcfg.get("image_ai_analysis") or {}).get("model") or "img-blip-base"
+        ai = mcfg.get("image_ai_analysis") or {}
+        mid = ai.get("model") or "img-blip-base"
+        user_model = (ai.get("user_model") or "").strip() or None
         try:
-            analyzer = models.make_image_captioner(mid, project, project_path)
+            analyzer = models.make_image_captioner(mid, project, project_path,
+                                                   user_model=user_model)
         except Exception:
             analyzer = None
 
@@ -336,13 +339,31 @@ def _run_one(job, project, src_path, work_path, stem, ext, validate, analyzer,
     math_mode = dcfg.get("math_mode", "text")
     plen = dcfg.get("name_prefix_len", 9)
 
-    if job == "latex":
-        tex = convert_pdf_to_latex(work_path, target, math_mode=math_mode,
-                                   name_prefix_len=plen,
-                                   out_basename=out_basename)
-        log(f"  OK  {name} -> {os.path.basename(tex)} (+ Latex_Resource)")
-    elif job == "markdown":
-        md = convert_pdf_to_markdown(work_path, target, math_mode=math_mode,
-                                     name_prefix_len=plen,
-                                     out_basename=out_basename)
-        log(f"  OK  {name} -> {os.path.basename(md)}")
+    # Apply a page range by converting a page-subset copy.
+    page_range = dcfg.get("page_range", "all")
+    conv_input = work_path
+    sub_tmp = None
+    if pdf_modify.is_page_subset(page_range):
+        import tempfile
+        fd, sub_tmp = tempfile.mkstemp(suffix=".pdf", prefix="paid_pages_")
+        os.close(fd)
+        pdf_modify.extract_pages(work_path, sub_tmp, page_range)
+        conv_input = sub_tmp
+
+    try:
+        if job == "latex":
+            tex = convert_pdf_to_latex(conv_input, target, math_mode=math_mode,
+                                       name_prefix_len=plen,
+                                       out_basename=out_basename)
+            log(f"  OK  {name} -> {os.path.basename(tex)} (+ Latex_Resource)")
+        elif job == "markdown":
+            md = convert_pdf_to_markdown(conv_input, target, math_mode=math_mode,
+                                         name_prefix_len=plen,
+                                         out_basename=out_basename)
+            log(f"  OK  {name} -> {os.path.basename(md)}")
+    finally:
+        if sub_tmp and os.path.exists(sub_tmp):
+            try:
+                os.remove(sub_tmp)
+            except OSError:
+                pass

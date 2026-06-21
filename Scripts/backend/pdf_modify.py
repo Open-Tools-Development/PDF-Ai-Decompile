@@ -309,6 +309,31 @@ def apply_modifications(input_path, output_path=None, *, password=None,
         doc.close()
 
 
+def extract_pages(input_path, output_path, pages_spec):
+    """Write a copy of ``input_path`` containing only ``pages_spec`` pages.
+
+    Used to apply a page range to the Decompile category (the converters parse
+    the whole document, so we feed them a page-subset PDF). ``input_path`` is
+    assumed already unlocked. Returns ``output_path``.
+    """
+    doc = fitz.open(input_path)
+    try:
+        pages = parse_page_range(pages_spec, doc.page_count)
+        if pages and len(pages) != doc.page_count:
+            doc.select(pages)
+        out_parent = os.path.dirname(os.path.abspath(output_path))
+        if out_parent:
+            os.makedirs(out_parent, exist_ok=True)
+        doc.save(output_path, garbage=3, deflate=True)
+    finally:
+        doc.close()
+    return output_path
+
+
+def is_page_subset(pages_spec) -> bool:
+    return str(pages_spec).strip().lower() not in ("", "all", "*")
+
+
 def has_advanced_options(modify_cfg) -> bool:
     """True if the Modify config needs the extended pipeline (vs simple removal)."""
     return bool(
