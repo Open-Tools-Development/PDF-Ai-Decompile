@@ -263,6 +263,7 @@ def _try_load_blip(model_id, project, project_path):
         meta = MANIFEST.get(model_id, {})
         if meta:
             src = meta.get("repo", "Salesforce/blip-image-captioning-base")
+            if project is not None and project_path is not None:
                 local = os.path.join(models_dir(project, project_path), model_id)
                 if os.path.isdir(local) and os.listdir(local):
                     src = local
