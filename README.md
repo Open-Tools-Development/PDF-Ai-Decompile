@@ -109,6 +109,20 @@ python3 run_app.py
    preview.
 7. Click **Run**. Progress and a log appear at the bottom.
 
+**Advanced Modify** (Modify PDF tab) also offers: remove restrictions &
+password, **search & replace text** (literal or regex), **search & replace
+image** (match an embedded image to a reference by similarity, then delete or
+replace), **AI image analysis**, a **page range** to change and which **pages to
+keep**, and a **Validate** mode that reports changes without writing.
+
+**Password recovery** (Passwords tab) can, for files you are authorised to open,
+brute force (charset/length/mask, threads, attempt/time limits, files in
+parallel) and use candidate-generator **models** — two ship built-in (Markov and
+a rule mangler, no download) and you can add your own. Confirmed passwords are
+kept in an encrypted reuse pool. AI models are **optional** and downloaded on
+demand into the project folder; without them a heuristic image description and
+the built-in password models are used.
+
 For LaTeX output, upload the `.tex` **and** its `Latex_Resource` folder to
 Overleaf, or compile locally with `pdflatex` (two passes).
 

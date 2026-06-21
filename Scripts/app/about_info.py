@@ -10,7 +10,7 @@ update.
 
 APP_NAME = "PDF Ai Decompile"
 TAGLINE = "Projects \u00b7 Modify PDF \u00b7 Decompile to LaTeX / Markdown"
-VERSION = "4.0"
+VERSION = "4.1"
 
 # --------------------------------------------------------------------------- #
 #  Authors  (single source of truth)                                          #
@@ -69,6 +69,14 @@ FEATURES = [
     "before processing, and locked files are skipped and flagged.",
     "Inspector tab: file name, size, page count, encryption, recovered "
     "password and permission restrictions, plus a scrollable page preview.",
+    "Advanced Modify: remove restrictions & password, search & replace text "
+    "(literal or regex), search & replace image (match by similarity, delete "
+    "or replace), AI image analysis, page-range selection and pages-to-keep, "
+    "plus a Validate mode that reports changes without writing.",
+    "Password recovery: brute force (charset/length/mask, threads, attempt or "
+    "time limits, files in parallel) and dependency-free candidate models "
+    "(Markov / rule mangler), with an encrypted reuse pool and your own model "
+    "support \u2014 for PDFs you are authorised to open.",
     "Decompile \u2192 LaTeX: one compilable IEEEtran .tex per PDF (title, authors, "
     "abstract, sections, figure & table captions, \\cite{} and bibliography) "
     "with four equation modes; or \u2192 Markdown (full text, no images).",
@@ -105,14 +113,26 @@ NOTES = [
     "(not selectable text), so those values are captured as figure images "
     "rather than as text.",
     "Passwords: only unlock PDFs you are authorised to open — the password "
-    "tools are a local \"forgot my password\" helper. Automated password "
-    "cracking (brute force / AI models) and AI image analysis are planned for "
-    "a later release.",
+    "tools are a local \"forgot my password\" helper. Brute force only "
+    "succeeds against weak passwords; strong AES-256 passwords are infeasible "
+    "to recover.",
+    "AI models are optional and downloaded on demand into the project folder. "
+    "Image analysis needs transformers/torch; without them a heuristic "
+    "description is used. The built-in password models need no download.",
 ]
 
 # Revision history (newest first). Shown in the About dialog and documented in
 # Doc/SKILL.md.
 REVISION_HISTORY = [
+    ("4.1", "Completed the v4 feature set. Advanced Modify: remove "
+            "restrictions & password, search & replace text (literal/regex) "
+            "and image (similarity match), AI image analysis, page-range and "
+            "pages-to-keep, and a Validate mode. Password recovery: "
+            "multi-threaded brute force (charset/length/mask, attempt/time "
+            "limits, files in parallel), dependency-free candidate models "
+            "(Markov / rule mangler) plus user models, and an encrypted reuse "
+            "pool. AI models are optional and downloaded on demand into the "
+            "project folder."),
     ("4.0", "Reorganised into a project-based, tabbed workflow. Projects "
             "(.paidproj) save all settings so work can be resumed; menu for "
             "New / Open / Save / Save As / Open Recent. Two activity "

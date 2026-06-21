@@ -9,7 +9,7 @@ description: >
   (3) convert a PDF into a full-text Markdown file with no images. The LaTeX and
   Markdown outputs are optimised for AI tools to read without processing the PDF.
   Use this document to understand the whole tool before modifying or extending it.
-version: "4.0"
+version: "4.1"
 authors:
   - Jerry James
   - Nisha
@@ -98,6 +98,9 @@ PDF-Ai-Decompile/
     │   ├─ appconfig.py          Per-user tool config + recent projects (§13)
     │   ├─ project.py            Project file (.paidproj) save/load/schema (§13)
     │   ├─ pdf_info.py           Scan / password / page-render (Inspector) (§13)
+    │   ├─ pdf_modify.py         Advanced Modify pipeline (text/image/pages) (§13)
+    │   ├─ passwords.py          Brute force + encrypted reuse pool (§13)
+    │   ├─ models.py             AI-model framework (pw generators / captioner) (§13)
     │   ├─ runner.py             Headless project runner (resolve pw → jobs) (§13)
     │   ├─ pdf_common.py         Shared parser + text→LaTeX + image extraction
     │   ├─ pdf_remove.py         Image removal (UI: "Modify PDF")
@@ -462,30 +465,37 @@ Multi-select pool with select-all/none, per-row remove, and filters
 Each entry's `info` (size/pages/encrypted) is filled by `pdf_info.scan_pdf` on
 add. Persists to `files[]`.
 
-### 13.3 Modify PDF (PARTIAL — items 6, 9, 11)
-DONE: output dest **beside each PDF** (mandatory non-empty suffix, never
-overwrite) or a **chosen folder**; **validate** vs **execute** run modes
-(validate logs what would change, also summarised in the Inspector); remove
-images / +vector. PLANNED (item 11): remove restrictions & password (needs
-`pikepdf`); search-&-replace text (regex); search-&-replace image; AI image
-analysis; per-file page range / pages-to-keep.
+### 13.3 Modify PDF (IMPLEMENTED — items 6, 9, 11)
+Output dest **beside each PDF** (mandatory non-empty suffix, never overwrite) or
+a **chosen folder**; **validate** vs **execute** run modes. The simple
+image-removal case still uses `pdf_remove`; everything else goes through
+`backend.pdf_modify.apply_modifications` (chosen by `has_advanced_options`):
+remove restrictions & password (saves unencrypted via PyMuPDF — no `pikepdf`
+needed), search-&-replace **text** (literal or regex, via redaction +
+re-insert), search-&-replace **image** (similarity match → delete/replace),
+**AI image analysis** (captions via `backend.models`), **page range** to process
+and **pages to keep**. All best-effort (a PDF is not a word processor).
 
 ### 13.4 Decompile to Text (IMPLEMENTED — items 4, 5)
 Pick any of LaTeX / Markdown; same output-dest model (beside / chosen folder).
 Reuses the existing `pdf_to_latex` / `pdf_to_markdown` backends via
 `backend.runner`.
 
-### 13.5 Passwords tab + Inspector (PARTIAL — items 7, 8, 9, 10)
+### 13.5 Passwords tab + Inspector (IMPLEMENTED — items 7, 8, 9, 10)
 DONE: per-file password OR a shared candidate pool; `runner.resolve_password`
 tries them (empty password first), records the working one on the file entry,
 and the runner unlocks the PDF (via `pdf_info.make_decrypted_copy`) before the
 backends touch it — locked files are skipped and flagged. The **Inspector** tab
 shows name/size/pages, encrypted?, known password, permission restrictions, a
 scrollable **page preview** (`pdf_info.render_page_png`), and the planned
-operations. PLANNED: **cracking** (opt-in) — brute force
-(charset/length/pattern/threads/limit, files parallel or serial) and/or a
-**candidate-generator "model"** (see §13.6); recovered passwords deduped into the
-hidden encrypted global pool for reuse; forced re-evaluation.
+operations. **Cracking** (opt-in, `backend.passwords`): multi-threaded brute
+force (charset/length/mask, attempt/time/infinite limit) and/or
+candidate-generator **models** (§13.6); `runner.recovery_pass` runs it as a
+pre-pass (files in parallel or serial). Every confirmed/provided password is
+deduped into the **hidden encrypted reuse pool** (`add_to_hidden_pool`,
+SHA-256-keystream + HMAC; read back only when cracking is enabled). The
+Passwords tab's **Detect** = pool/per-file only; **Crack now** = run the
+configured engine. Re-evaluation is just running it again.
 
 > PyMuPDF note: since ~1.27 `doc.needs_pass` stays truthy even after a
 > successful `authenticate()`. `pdf_info` therefore trusts the `authenticate()`
@@ -495,7 +505,15 @@ hidden encrypted global pool for reuse; forced re-evaluation.
 > authorised to access (a local, offline "forgot my password" utility). The UI
 > must carry that notice; the tool does not target remote systems.
 
-### 13.6 AI models — delivery & the "password model" reality (item 13)
+### 13.6 AI models — delivery & the "password model" reality (IMPLEMENTED — item 13)
+`backend.models` provides the framework: a curated `MANIFEST`, `download_model`
+(lazy `huggingface_hub`), `make_password_generator(model_id, hints)` and
+`make_image_captioner(...)`. Two **dependency-free** password generators ship:
+`pw-markov-builtin` (order-2 char Markov trained on the user's samples) and
+`pw-rules-builtin` (case/leet/suffix mangling). The image captioner uses a real
+HF model (BLIP) if `transformers`+`torch` and weights are present, else a
+heuristic. Users add their own password generator as a `.py` exposing
+`generate(hints)`. Design notes that shaped this:
 - **Delivery: download-on-demand** (recommended) into the project assets folder
   (or a shared user cache), from a small **curated manifest** (id, source, URL,
   sha256), verified on download; the tool runs fully without them (falls back to
@@ -510,7 +528,11 @@ hidden encrypted global pool for reuse; forced re-evaluation.
   against the PDF. Image analysis (item 11) is the opposite: real HF
   vision-language/caption models (e.g. BLIP) work well and download-on-demand.
 
-### 13.7 New dependencies (added per phase, not all at once)
-`pikepdf` (remove restrictions/password, robust rewrite), and — only when the AI
-phases land — `huggingface_hub`/`transformers`/`torch` (kept optional, lazy
-imported, with heuristic fallbacks so the core tool stays light and offline).
+### 13.7 Dependencies
+Core stays the same (`PyMuPDF`, `customtkinter`, `Pillow`) — restrictions/
+password removal and all modify ops use PyMuPDF, so **no `pikepdf`**. The AI
+extras are **optional and lazy**: `huggingface_hub` (download models),
+`transformers`+`torch` (real image captioning). Without them the built-in
+password generators and the heuristic captioner still work, and the tool stays
+light and fully offline. The encrypted reuse pool needs **no** crypto dependency
+(self-contained SHA-256 keystream + HMAC in `backend.passwords`).

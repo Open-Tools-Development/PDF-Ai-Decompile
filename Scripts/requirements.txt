@@ -1,3 +1,8 @@
 PyMuPDF>=1.24.0
 customtkinter>=5.2.0
 Pillow>=9.0.0
+
+# Optional AI extras (download-on-demand image captioning). The tool runs fully
+# without these — built-in password models and a heuristic captioner are used.
+#   pip install huggingface_hub        # download curated models on demand
+#   pip install transformers torch     # real image captioning (e.g. BLIP)

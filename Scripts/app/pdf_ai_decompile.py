@@ -36,6 +36,7 @@ from backend import appconfig
 from backend import project as projmod
 from backend import pdf_info
 from backend import runner
+from backend import models
 
 
 # --------------------------------------------------------------------------- #
@@ -210,6 +211,30 @@ class App(ctk.CTk):
         self.math_mode = tk.StringVar(value="text")
         self.prefix_len = tk.StringVar(value="9")
         self.out_prefix = tk.StringVar(value="")
+
+        # Advanced Modify options.
+        self.remove_restrictions = tk.BooleanVar(value=False)
+        self.ai_analysis_enabled = tk.BooleanVar(value=False)
+        self.ai_model = tk.StringVar(value="img-blip-base")
+        self.process_pages = tk.StringVar(value="all")
+        self.keep_pages = tk.StringVar(value="all")
+        self._text_rep_rows = []     # (find_var, replace_var, regex_var)
+        self._img_rep_rows = []      # (image_var, pct_var, action_var, repl_var)
+
+        # Password cracking config.
+        self.crack_enabled = tk.BooleanVar(value=False)
+        self.crack_method = tk.StringVar(value="bruteforce")
+        self.crack_use_hidden = tk.BooleanVar(value=False)
+        self.crack_parallel = tk.BooleanVar(value=False)
+        self.bf_charset = tk.StringVar(value="lower+digits")
+        self.bf_min = tk.StringVar(value="1")
+        self.bf_max = tk.StringVar(value="4")
+        self.bf_pattern = tk.StringVar(value="")
+        self.bf_threads = tk.StringVar(value="4")
+        self.bf_limit_type = tk.StringVar(value="attempts")
+        self.bf_limit_value = tk.StringVar(value="1000000")
+        self.user_model_path = tk.StringVar(value="")
+        self._pw_model_vars = {}     # model_id -> BooleanVar
 
         # Files-tab filter.
         self.filter_field = tk.StringVar(value="Name")
@@ -557,27 +582,33 @@ class App(ctk.CTk):
 
     # ============================ Modify tab ============================ #
     def _build_modify_tab(self, tab):
+        tab.grid_rowconfigure(0, weight=1)
         tab.grid_columnconfigure(0, weight=1)
-        ctk.CTkCheckBox(tab, text="Enable “Modify PDF” in the run",
+        body = ctk.CTkScrollableFrame(tab, label_text="")
+        body.grid(row=0, column=0, sticky="nsew")
+        body.grid_columnconfigure(0, weight=1)
+        r = 0
+
+        ctk.CTkCheckBox(body, text="Enable “Modify PDF” in the run",
                         variable=self.modify_enabled,
                         font=ctk.CTkFont(size=14, weight="bold")).grid(
-            row=0, column=0, sticky="w", padx=8, pady=(10, 6))
+            row=r, column=0, sticky="w", padx=8, pady=(8, 6)); r += 1
 
-        mode = ctk.CTkFrame(tab)
-        mode.grid(row=1, column=0, sticky="ew", padx=8, pady=4)
+        mode = ctk.CTkFrame(body)
+        mode.grid(row=r, column=0, sticky="ew", padx=8, pady=4); r += 1
         ctk.CTkLabel(mode, text="Run mode", font=ctk.CTkFont(weight="bold"),
                      anchor="w").pack(fill="x", padx=10, pady=(8, 2))
         ctk.CTkRadioButton(mode, text="Execute — write the modified PDF",
                            variable=self.modify_mode, value="execute").pack(
             anchor="w", padx=16, pady=2)
         ctk.CTkRadioButton(
-            mode, text="Validate — don’t write; report what would "
-                       "change (see Inspector)",
+            mode, text="Validate — don’t write; report what would change "
+                       "(see Inspector)",
             variable=self.modify_mode, value="validate").pack(
             anchor="w", padx=16, pady=2)
 
-        what = ctk.CTkFrame(tab)
-        what.grid(row=2, column=0, sticky="ew", padx=8, pady=4)
+        what = ctk.CTkFrame(body)
+        what.grid(row=r, column=0, sticky="ew", padx=8, pady=4); r += 1
         ctk.CTkLabel(what, text="What to remove",
                      font=ctk.CTkFont(weight="bold"), anchor="w").pack(
             fill="x", padx=10, pady=(8, 2))
@@ -589,18 +620,163 @@ class App(ctk.CTk):
             what, text="Remove images + figures/charts (text-only result)",
             variable=self.remove_mode, value="all").pack(
             anchor="w", padx=16, pady=2)
+        ctk.CTkCheckBox(
+            what, text="Also remove restrictions & password (save an unlocked "
+                       "copy)", variable=self.remove_restrictions).pack(
+            anchor="w", padx=16, pady=(2, 8))
 
-        self._build_output_panel(tab, row=3, dest_var=self.dest_modify,
+        self._build_text_rep_editor(body).grid(row=r, column=0, sticky="ew",
+                                               padx=8, pady=4); r += 1
+        self._build_img_rep_editor(body).grid(row=r, column=0, sticky="ew",
+                                              padx=8, pady=4); r += 1
+        self._build_ai_analysis_panel(body).grid(row=r, column=0, sticky="ew",
+                                                 padx=8, pady=4); r += 1
+        self._build_pages_panel(body).grid(row=r, column=0, sticky="ew",
+                                           padx=8, pady=4); r += 1
+        self._build_output_panel(body, row=r, dest_var=self.dest_modify,
                                  folder_var=self.folder_modify,
                                  title="Output location (Modify PDF)",
-                                 suffix_var=self.suffix)
+                                 suffix_var=self.suffix); r += 1
 
-        ctk.CTkLabel(
-            tab, text="More Modify options (search/replace text & image, remove "
-                      "restrictions, page ranges, AI image analysis) arrive in a "
-                      "later phase.", text_color="gray", justify="left",
-            wraplength=720, font=ctk.CTkFont(size=11, slant="italic")).grid(
-            row=4, column=0, sticky="w", padx=10, pady=(8, 4))
+    # ---- Modify: search & replace text editor ----
+    def _build_text_rep_editor(self, parent):
+        f = ctk.CTkFrame(parent)
+        ctk.CTkLabel(f, text="Search & replace text",
+                     font=ctk.CTkFont(weight="bold"), anchor="w").pack(
+            fill="x", padx=10, pady=(8, 2))
+        self.text_rep_holder = ctk.CTkFrame(f, fg_color="transparent")
+        self.text_rep_holder.pack(fill="x", padx=8)
+        ctk.CTkButton(f, text="+ Add text rule", width=130,
+                      command=lambda: self._add_text_rep_row()).pack(
+            anchor="w", padx=10, pady=(4, 2))
+        ctk.CTkLabel(f, text="Best-effort: matched text is redacted and the "
+                             "replacement written in its place.",
+                     text_color="gray", font=ctk.CTkFont(size=11),
+                     anchor="w").pack(fill="x", padx=10, pady=(0, 8))
+        return f
+
+    def _add_text_rep_row(self, find="", replace="", regex=False):
+        row = ctk.CTkFrame(self.text_rep_holder, fg_color="transparent")
+        row.pack(fill="x", pady=1)
+        fv, rv, gv = (tk.StringVar(value=find), tk.StringVar(value=replace),
+                      tk.BooleanVar(value=regex))
+        ctk.CTkEntry(row, textvariable=fv, width=190,
+                     placeholder_text="find").pack(side="left", padx=2)
+        ctk.CTkLabel(row, text="→").pack(side="left", padx=2)
+        ctk.CTkEntry(row, textvariable=rv, width=190,
+                     placeholder_text="replace with").pack(side="left", padx=2)
+        ctk.CTkCheckBox(row, text="regex", variable=gv, width=60).pack(
+            side="left", padx=4)
+        rec = (fv, rv, gv, row)
+        ctk.CTkButton(row, text="✕", width=28, fg_color="gray30",
+                      hover_color="#b91c1c",
+                      command=lambda: self._del_row(self._text_rep_rows, rec)
+                      ).pack(side="left", padx=2)
+        self._text_rep_rows.append(rec)
+
+    # ---- Modify: search & replace image editor ----
+    def _build_img_rep_editor(self, parent):
+        f = ctk.CTkFrame(parent)
+        ctk.CTkLabel(f, text="Search & replace image",
+                     font=ctk.CTkFont(weight="bold"), anchor="w").pack(
+            fill="x", padx=10, pady=(8, 2))
+        self.img_rep_holder = ctk.CTkFrame(f, fg_color="transparent")
+        self.img_rep_holder.pack(fill="x", padx=8)
+        ctk.CTkButton(f, text="+ Add image rule", width=140,
+                      command=lambda: self._add_img_rep_row()).pack(
+            anchor="w", padx=10, pady=(4, 2))
+        ctk.CTkLabel(f, text="Embedded images matching the reference image by "
+                             "≥ the given % are deleted or replaced.",
+                     text_color="gray", font=ctk.CTkFont(size=11),
+                     anchor="w").pack(fill="x", padx=10, pady=(0, 8))
+        return f
+
+    def _add_img_rep_row(self, image="", pct="90", action="delete", repl=""):
+        row = ctk.CTkFrame(self.img_rep_holder, fg_color="transparent")
+        row.pack(fill="x", pady=1)
+        iv, pv = tk.StringVar(value=image), tk.StringVar(value=str(pct))
+        av, rvar = tk.StringVar(value=action), tk.StringVar(value=repl)
+        ctk.CTkEntry(row, textvariable=iv, width=160,
+                     placeholder_text="match image…").pack(side="left", padx=2)
+        ctk.CTkButton(row, text="…", width=28,
+                      command=lambda v=iv: self._choose_image(v)).pack(
+            side="left")
+        ctk.CTkEntry(row, textvariable=pv, width=44).pack(side="left", padx=2)
+        ctk.CTkLabel(row, text="%").pack(side="left")
+        ctk.CTkOptionMenu(row, variable=av, width=92,
+                          values=["delete", "replace"]).pack(side="left", padx=4)
+        ctk.CTkEntry(row, textvariable=rvar, width=150,
+                     placeholder_text="replacement (if replace)").pack(
+            side="left", padx=2)
+        ctk.CTkButton(row, text="…", width=28,
+                      command=lambda v=rvar: self._choose_image(v)).pack(
+            side="left")
+        rec = (iv, pv, av, rvar, row)
+        ctk.CTkButton(row, text="✕", width=28, fg_color="gray30",
+                      hover_color="#b91c1c",
+                      command=lambda: self._del_row(self._img_rep_rows, rec)
+                      ).pack(side="left", padx=2)
+        self._img_rep_rows.append(rec)
+
+    def _del_row(self, store, rec):
+        rec[-1].destroy()
+        store[:] = [r for r in store if r is not rec]
+
+    def _choose_image(self, var):
+        path = filedialog.askopenfilename(
+            title="Select image",
+            filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.gif"),
+                       ("All files", "*.*")])
+        if path:
+            var.set(path)
+
+    # ---- Modify: AI image analysis ----
+    def _build_ai_analysis_panel(self, parent):
+        f = ctk.CTkFrame(parent)
+        ctk.CTkCheckBox(
+            f, text="Analyse images with an AI model (caption each image in "
+                    "place)", variable=self.ai_analysis_enabled,
+            font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10,
+                                                  pady=(8, 2))
+        row = ctk.CTkFrame(f, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=(0, 4))
+        ctk.CTkLabel(row, text="Model:").pack(side="left", padx=(0, 6))
+        img_models = [mid for mid, _ in models.list_models("image")] or \
+            ["img-blip-base"]
+        ctk.CTkOptionMenu(row, variable=self.ai_model, width=200,
+                          values=img_models).pack(side="left")
+        ctk.CTkButton(row, text="Download", width=90,
+                      command=self._download_selected_image_model).pack(
+            side="left", padx=8)
+        ctk.CTkLabel(f, text="Downloaded on demand. Without the model "
+                             "(transformers/torch), a heuristic description is "
+                             "used.", text_color="gray",
+                     font=ctk.CTkFont(size=11), anchor="w").pack(
+            fill="x", padx=10, pady=(0, 8))
+        return f
+
+    # ---- Modify: page ranges ----
+    def _build_pages_panel(self, parent):
+        f = ctk.CTkFrame(parent)
+        ctk.CTkLabel(f, text="Pages", font=ctk.CTkFont(weight="bold"),
+                     anchor="w").pack(fill="x", padx=10, pady=(8, 2))
+        r1 = ctk.CTkFrame(f, fg_color="transparent")
+        r1.pack(fill="x", padx=14, pady=2)
+        ctk.CTkLabel(r1, text="Apply changes to pages:", width=170,
+                     anchor="w").pack(side="left")
+        ctk.CTkEntry(r1, textvariable=self.process_pages, width=160).pack(
+            side="left")
+        ctk.CTkLabel(r1, text="e.g. all or 1-3,5", text_color="gray").pack(
+            side="left", padx=8)
+        r2 = ctk.CTkFrame(f, fg_color="transparent")
+        r2.pack(fill="x", padx=14, pady=(2, 8))
+        ctk.CTkLabel(r2, text="Keep only these pages:", width=170,
+                     anchor="w").pack(side="left")
+        ctk.CTkEntry(r2, textvariable=self.keep_pages, width=160).pack(
+            side="left")
+        ctk.CTkLabel(r2, text="all = keep every page", text_color="gray").pack(
+            side="left", padx=8)
+        return f
 
     # ========================== Decompile tab ========================== #
     def _build_decompile_tab(self, tab):
@@ -698,12 +874,12 @@ class App(ctk.CTk):
 
         ctk.CTkLabel(
             tab, text="Passwords are tried before processing each PDF: the "
-                      "file’s specific password first, then the shared "
-                      "pool. Files that stay locked are skipped (see Inspector).",
-            justify="left", wraplength=900, text_color="gray").grid(
+                      "file’s specific password first, then the shared pool. "
+                      "Locked files are skipped unless cracking finds the "
+                      "password. Recover only files you are authorised to open.",
+            justify="left", wraplength=1000, text_color="gray").grid(
             row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4))
 
-        # Left: shared candidate pool.
         left = ctk.CTkFrame(tab)
         left.grid(row=1, column=0, sticky="nsew", padx=(8, 4), pady=4)
         left.grid_rowconfigure(1, weight=1)
@@ -714,7 +890,6 @@ class App(ctk.CTk):
         self.pool_box = ctk.CTkTextbox(left, wrap="none")
         self.pool_box.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 8))
 
-        # Right: per-file passwords.
         right = ctk.CTkFrame(tab)
         right.grid(row=1, column=1, sticky="nsew", padx=(4, 8), pady=4)
         right.grid_rowconfigure(1, weight=1)
@@ -726,17 +901,131 @@ class App(ctk.CTk):
         self.perfile_frame.grid(row=1, column=0, sticky="nsew", padx=10,
                                 pady=(0, 8))
 
+        self._build_cracking_panel(tab).grid(row=2, column=0, columnspan=2,
+                                             sticky="ew", padx=8, pady=4)
+
         actions = ctk.CTkFrame(tab, fg_color="transparent")
-        actions.grid(row=2, column=0, columnspan=2, sticky="ew", padx=8,
+        actions.grid(row=3, column=0, columnspan=2, sticky="ew", padx=8,
                      pady=(0, 6))
         ctk.CTkButton(actions, text="Detect passwords now",
                       command=self.detect_passwords).pack(side="left", padx=4)
+        ctk.CTkButton(actions, text="Crack now", command=self.crack_now).pack(
+            side="left", padx=4)
         ctk.CTkLabel(
-            actions, text="Password cracking (brute force / AI models) and the "
-                          "encrypted reuse pool arrive in a later phase. "
-                          "Recover only files you are authorised to open.",
+            actions, text="Detect = try pool/per-file. Crack = also run the "
+                          "configured brute force / models (can be slow).",
             text_color="gray", font=ctk.CTkFont(size=11)).pack(
             side="left", padx=10)
+
+    def _build_cracking_panel(self, parent):
+        f = ctk.CTkFrame(parent)
+        ctk.CTkCheckBox(
+            f, text="Enable password cracking", variable=self.crack_enabled,
+            font=ctk.CTkFont(weight="bold")).grid(
+            row=0, column=0, columnspan=6, sticky="w", padx=10, pady=(8, 2))
+
+        m = ctk.CTkFrame(f, fg_color="transparent")
+        m.grid(row=1, column=0, columnspan=6, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(m, text="Method:").pack(side="left", padx=(0, 4))
+        ctk.CTkOptionMenu(m, variable=self.crack_method, width=120,
+                          values=["bruteforce", "model", "both"]).pack(
+            side="left")
+        ctk.CTkCheckBox(m, text="Use hidden reuse pool",
+                        variable=self.crack_use_hidden).pack(side="left",
+                                                             padx=12)
+        ctk.CTkCheckBox(m, text="Crack files in parallel",
+                        variable=self.crack_parallel).pack(side="left", padx=8)
+
+        bf = ctk.CTkFrame(f, fg_color="transparent")
+        bf.grid(row=2, column=0, columnspan=6, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(bf, text="Brute force:").pack(side="left", padx=(0, 4))
+        ctk.CTkComboBox(bf, variable=self.bf_charset, width=130,
+                        values=["digits", "lower", "upper", "letters",
+                                "lower+digits", "alnum", "all"]).pack(
+            side="left", padx=2)
+        ctk.CTkLabel(bf, text="len").pack(side="left", padx=(8, 2))
+        ctk.CTkEntry(bf, textvariable=self.bf_min, width=40).pack(side="left")
+        ctk.CTkLabel(bf, text="–").pack(side="left")
+        ctk.CTkEntry(bf, textvariable=self.bf_max, width=40).pack(side="left")
+        ctk.CTkLabel(bf, text="mask").pack(side="left", padx=(8, 2))
+        ctk.CTkEntry(bf, textvariable=self.bf_pattern, width=110,
+                     placeholder_text="?d?d (optional)").pack(side="left")
+        ctk.CTkLabel(bf, text="threads").pack(side="left", padx=(8, 2))
+        ctk.CTkEntry(bf, textvariable=self.bf_threads, width=40).pack(
+            side="left")
+
+        lim = ctk.CTkFrame(f, fg_color="transparent")
+        lim.grid(row=3, column=0, columnspan=6, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(lim, text="Limit:").pack(side="left", padx=(0, 4))
+        ctk.CTkOptionMenu(lim, variable=self.bf_limit_type, width=110,
+                          values=["attempts", "time", "infinite"]).pack(
+            side="left")
+        ctk.CTkEntry(lim, textvariable=self.bf_limit_value, width=110).pack(
+            side="left", padx=6)
+        ctk.CTkLabel(lim, text="(max attempts, or seconds)",
+                     text_color="gray").pack(side="left")
+
+        mdl = ctk.CTkFrame(f, fg_color="transparent")
+        mdl.grid(row=4, column=0, columnspan=6, sticky="w", padx=10, pady=2)
+        ctk.CTkLabel(mdl, text="Models:").pack(side="left", padx=(0, 4))
+        self._pw_model_vars = {}
+        for mid, meta in models.list_models("password"):
+            var = tk.BooleanVar(value=False)
+            ctk.CTkCheckBox(mdl, text=meta.get("name", mid), variable=var).pack(
+                side="left", padx=6)
+            self._pw_model_vars[mid] = var
+
+        um = ctk.CTkFrame(f, fg_color="transparent")
+        um.grid(row=5, column=0, columnspan=6, sticky="w", padx=10, pady=(2, 8))
+        ctk.CTkLabel(um, text="Your own model (.py with generate(hints)):").pack(
+            side="left", padx=(0, 4))
+        ctk.CTkEntry(um, textvariable=self.user_model_path, width=260,
+                     placeholder_text="path to .py…").pack(side="left")
+        ctk.CTkButton(um, text="…", width=28,
+                      command=self._choose_user_model).pack(side="left", padx=4)
+        return f
+
+    def _choose_user_model(self):
+        path = filedialog.askopenfilename(
+            title="Select a password generator (.py)",
+            filetypes=[("Python", "*.py"), ("All files", "*.*")])
+        if path:
+            self.user_model_path.set(path)
+
+    def _download_selected_image_model(self):
+        self._gather_ui_to_project()
+        mid = self.ai_model.get()
+
+        def work():
+            try:
+                self.msg_queue.put(("log", f"Downloading model {mid}…"))
+                path = models.download_model(
+                    mid, self.project, self.project_path,
+                    progress=lambda m: self.msg_queue.put(("log", m)))
+                self.msg_queue.put(("log", f"Model ready: {path or '(built-in)'}"))
+            except Exception as exc:  # noqa: BLE001
+                self.msg_queue.put(("log", f"Download failed: {exc}"))
+        threading.Thread(target=work, daemon=True).start()
+
+    def crack_now(self):
+        self._gather_ui_to_project()
+        if not self.project["passwords"]["cracking"]["enabled"]:
+            messagebox.showinfo(about_info.APP_NAME,
+                                "Enable password cracking first.")
+            return
+        self._stop_flag = False
+        self.run_btn.configure(state="disabled")
+        self.stop_btn.configure(state="normal")
+        self.status_lbl.configure(text="Cracking…")
+        self._log("-" * 64)
+        self._log("Cracking passwords…")
+
+        def work():
+            runner.recovery_pass(
+                self.project, stop=lambda: self._stop_flag,
+                log=lambda m: self.msg_queue.put(("log", m)))
+            self.msg_queue.put(("crack_done", None))
+        threading.Thread(target=work, daemon=True).start()
 
     def _rebuild_perfile_rows(self):
         for child in self.perfile_frame.winfo_children():
@@ -944,6 +1233,16 @@ class App(ctk.CTk):
         self.modify_enabled.set(mp.get("enabled", False))
         self.modify_mode.set(mp.get("mode", "execute"))
         self.remove_mode.set("all" if mp.get("remove_vector") else "images")
+        self.remove_restrictions.set(
+            mp.get("remove_restrictions_and_password", False))
+        ai = mp.get("image_ai_analysis", {}) or {}
+        self.ai_analysis_enabled.set(ai.get("enabled", False))
+        self.ai_model.set(ai.get("model") or "img-blip-base")
+        self.process_pages.set(mp.get("page_range", "all") or "all")
+        self.keep_pages.set(mp.get("keep_pages", "all") or "all")
+        self._set_text_reps(mp.get("search_replace_text", []) or [])
+        self._set_img_reps(mp.get("search_replace_image", []) or [])
+        self._apply_cracking(p.get("passwords", {}).get("cracking", {}))
         dc = p.get("decompile", {})
         self.dec_enabled.set(dc.get("enabled", False))
         fmts = dc.get("formats", ["latex", "markdown"])
@@ -969,9 +1268,19 @@ class App(ctk.CTk):
                                  "suffix": self.suffix.get().strip()}
         p["output"]["decompile"] = {"dest": self.dest_dec.get(),
                                     "folder": self.folder_dec.get().strip()}
-        p["modify_pdf"]["enabled"] = bool(self.modify_enabled.get())
-        p["modify_pdf"]["mode"] = self.modify_mode.get()
-        p["modify_pdf"]["remove_vector"] = self.remove_mode.get() == "all"
+        mpf = p["modify_pdf"]
+        mpf["enabled"] = bool(self.modify_enabled.get())
+        mpf["mode"] = self.modify_mode.get()
+        mpf["remove_vector"] = self.remove_mode.get() == "all"
+        mpf["remove_restrictions_and_password"] = bool(
+            self.remove_restrictions.get())
+        mpf["image_ai_analysis"] = {"enabled": bool(self.ai_analysis_enabled.get()),
+                                    "model": self.ai_model.get()}
+        mpf["page_range"] = self.process_pages.get().strip() or "all"
+        mpf["keep_pages"] = self.keep_pages.get().strip() or "all"
+        mpf["search_replace_text"] = self._gather_text_reps()
+        mpf["search_replace_image"] = self._gather_img_reps()
+        self._gather_cracking()
         fmts = []
         if self.fmt_latex.get():
             fmts.append("latex")
@@ -996,6 +1305,95 @@ class App(ctk.CTk):
             if val:
                 per_file[path] = val
         p["passwords"]["per_file"] = per_file
+
+    # ---- advanced-Modify and cracking gather/apply helpers ----
+    def _set_text_reps(self, reps):
+        for rec in list(self._text_rep_rows):
+            rec[3].destroy()
+        self._text_rep_rows = []
+        for rp in reps:
+            self._add_text_rep_row(rp.get("find", ""), rp.get("replace", ""),
+                                   rp.get("regex", False))
+
+    def _set_img_reps(self, reps):
+        for rec in list(self._img_rep_rows):
+            rec[4].destroy()
+        self._img_rep_rows = []
+        for rp in reps:
+            self._add_img_rep_row(rp.get("image", ""), rp.get("match_pct", 90),
+                                  rp.get("action", "delete"),
+                                  rp.get("replacement", ""))
+
+    def _gather_text_reps(self):
+        out = []
+        for fv, rv, gv, _row in self._text_rep_rows:
+            if fv.get().strip():
+                out.append({"find": fv.get(), "replace": rv.get(),
+                            "regex": bool(gv.get())})
+        return out
+
+    def _gather_img_reps(self):
+        out = []
+        for iv, pv, av, rvar, _row in self._img_rep_rows:
+            if iv.get().strip():
+                try:
+                    pct = float(pv.get())
+                except ValueError:
+                    pct = 90.0
+                out.append({"image": iv.get(), "match_pct": pct,
+                            "action": av.get(), "replacement": rvar.get()})
+        return out
+
+    @staticmethod
+    def _int_or(var, default):
+        try:
+            return int(float(var.get().strip()))
+        except (ValueError, AttributeError):
+            return default
+
+    def _gather_cracking(self):
+        cr = self.project["passwords"]["cracking"]
+        cr["enabled"] = bool(self.crack_enabled.get())
+        cr["method"] = self.crack_method.get()
+        cr["use_hidden_pool"] = bool(self.crack_use_hidden.get())
+        cr["parallel_files"] = bool(self.crack_parallel.get())
+        bf = cr["bruteforce"]
+        bf["charset"] = self.bf_charset.get().strip() or "lower+digits"
+        bf["min_len"] = self._int_or(self.bf_min, 1)
+        bf["max_len"] = self._int_or(self.bf_max, 4)
+        bf["pattern"] = self.bf_pattern.get().strip()
+        bf["threads"] = self._int_or(self.bf_threads, 4)
+        bf["limit_type"] = self.bf_limit_type.get()
+        bf["limit_value"] = self._int_or(self.bf_limit_value, 1_000_000)
+        cr["model"]["selected"] = [mid for mid, var in self._pw_model_vars.items()
+                                   if var.get()]
+        ump = self.user_model_path.get().strip()
+        cr["model"]["user_models"] = (
+            [{"id": os.path.basename(ump), "path": ump}] if ump else [])
+
+    def _apply_cracking(self, cr):
+        self.crack_enabled.set(cr.get("enabled", False))
+        self.crack_method.set(cr.get("method", "bruteforce"))
+        self.crack_use_hidden.set(cr.get("use_hidden_pool", False))
+        self.crack_parallel.set(cr.get("parallel_files", False))
+        bf = cr.get("bruteforce", {})
+        self.bf_charset.set(bf.get("charset", "lower+digits"))
+        self.bf_min.set(str(bf.get("min_len", 1)))
+        self.bf_max.set(str(bf.get("max_len", 4)))
+        self.bf_pattern.set(bf.get("pattern", ""))
+        self.bf_threads.set(str(bf.get("threads", 4)))
+        self.bf_limit_type.set(bf.get("limit_type", "attempts"))
+        self.bf_limit_value.set(str(bf.get("limit_value", 1_000_000)))
+        sel = set(cr.get("model", {}).get("selected", []))
+        for mid, var in self._pw_model_vars.items():
+            var.set(mid in sel)
+        ums = cr.get("model", {}).get("user_models", [])
+        if ums:
+            first = ums[0]
+            self.user_model_path.set(
+                first.get("path") if isinstance(first, dict) else str(first))
+        else:
+            self.user_model_path.set("")
 
     def _confirm_discard(self):
         return messagebox.askyesno(
@@ -1145,7 +1543,8 @@ class App(ctk.CTk):
             self.msg_queue.put(("progress", f))
         try:
             res = runner.run(self.project, log=log, progress=prog,
-                             stop=lambda: self._stop_flag)
+                             stop=lambda: self._stop_flag,
+                             project_path=self.project_path)
             self.msg_queue.put(("done", res))
         except Exception as exc:  # noqa: BLE001
             self.msg_queue.put(("log", f"FATAL: {exc}"))
@@ -1167,6 +1566,8 @@ class App(ctk.CTk):
                     self.progress.set(payload)
                 elif kind == "done":
                     self._on_run_done(payload)
+                elif kind == "crack_done":
+                    self._on_crack_done()
                 elif kind == "ipreview_start":
                     self._clear_insp_body()
                     if payload > self.PREVIEW_PAGE_CAP:
@@ -1222,6 +1623,14 @@ class App(ctk.CTk):
                 about_info.APP_NAME,
                 f"Finished with errors: {res['ok']} ok, {res['fail']} failed, "
                 f"{res['skip']} skipped. See the log.")
+
+    def _on_crack_done(self):
+        self.run_btn.configure(state="normal")
+        self.stop_btn.configure(state="disabled")
+        self.status_lbl.configure(text="Ready")
+        self._rebuild_perfile_rows()
+        self._render_files()
+        self._log("Cracking pass complete.")
 
     def _on_close(self):
         self.destroy()

@@ -3,21 +3,24 @@
 backend/runner.py
 =================
 The headless batch runner that turns a **project** into outputs. Extracted from
-the GUI so it can be unit-tested: given a project dict, it resolves each
-selected file's password (per-file value, then the shared pool), runs the
-enabled jobs ("Modify PDF" and/or "Decompile to Text" formats) into the
-configured output destinations, and reports progress through callbacks.
+the GUI so it can be unit-tested.
 
-It never overwrites the source PDF, and it transparently handles locked files
-by working on an unlocked temporary copy when a password is known. Files that
-stay locked are skipped and flagged (the Inspector surfaces why).
+Per run it: (1) optionally recovers passwords for locked files (pool / hidden
+pool / brute force / model guesses — see ``backend.passwords`` and
+``backend.models``), (2) for each selected file resolves a working password and
+unlocks a temporary copy if needed, then (3) runs the enabled jobs — "Modify
+PDF" (via ``backend.pdf_modify``) and/or "Decompile to Text" — into the
+configured output destinations. It never overwrites the source PDF; files that
+stay locked are skipped and flagged. Every confirmed password is recorded
+(de-duplicated) into the hidden encrypted reuse pool.
 """
 
 from __future__ import annotations
 
 import os
+import threading
 
-from . import pdf_info, project as proj
+from . import pdf_info, pdf_modify, passwords, models
 from .pdf_remove import remove_images_from_pdf
 from .pdf_to_latex import convert_pdf_to_latex
 from .pdf_to_markdown import convert_pdf_to_markdown
@@ -60,18 +63,135 @@ def resolve_password(file_entry: dict, project: dict) -> dict:
     return pdf_info.try_passwords(path, candidates)
 
 
+def _record_password(pw):
+    """Remember a confirmed/provided password in the hidden encrypted pool."""
+    if pw:
+        try:
+            passwords.add_to_hidden_pool([pw])
+        except Exception:
+            pass
+
+
+# --------------------------------------------------------------------------- #
+#  Password recovery (pool → hidden pool → brute force / model)                #
+# --------------------------------------------------------------------------- #
+def recover_password(fentry: dict, project: dict, *, stop=None, log=None) -> dict:
+    """Resolve or crack a file's password. Returns
+    ``{needs_password, opened, password, source, attempts?}``."""
+    log = log or (lambda _m: None)
+    stop = stop or (lambda: False)
+    name = os.path.basename(fentry["path"])
+
+    res = resolve_password(fentry, project)
+    if res.get("error"):
+        return {"needs_password": None, "opened": False, "password": None,
+                "source": "error", "error": res["error"]}
+    if not res["needs_password"]:
+        return {"needs_password": False, "opened": True, "password": None,
+                "source": "none"}
+    if res["opened"]:
+        _record_password(res["password"])
+        return {"needs_password": True, "opened": True,
+                "password": res["password"], "source": "provided/pool"}
+
+    cr = project.get("passwords", {}).get("cracking", {})
+    if not cr.get("enabled"):
+        return {"needs_password": True, "opened": False, "password": None,
+                "source": "none"}
+
+    # Build the candidate pool that precedes brute force.
+    extra = []
+    if cr.get("use_hidden_pool"):
+        extra += passwords.load_hidden_pool()
+    extra += [p for p in project.get("passwords", {}).get("pool", []) if p]
+
+    method = cr.get("method", "bruteforce")
+    bf = dict(cr.get("bruteforce", {}))
+    if method in ("model", "both"):
+        hints = {"samples": list(dict.fromkeys(extra)),
+                 "min_len": int(bf.get("min_len", 1)),
+                 "max_len": int(bf.get("max_len", 16)), "count": 5000}
+        mc = cr.get("model", {})
+        for mid in mc.get("selected", []):
+            try:
+                extra += list(models.make_password_generator(mid, hints))
+            except Exception:
+                pass
+        for um in mc.get("user_models", []):
+            p = um.get("path") if isinstance(um, dict) else um
+            if p:
+                try:
+                    extra += list(models.make_password_generator(p, hints))
+                except Exception:
+                    pass
+    if method == "model":
+        bf["skip_bruteforce"] = True
+
+    log(f"  CRACK {name}: trying (method={method})…")
+    result = passwords.crack_file(
+        fentry["path"], config=bf, extra_candidates=extra, stop=stop,
+        on_progress=lambda a: log(f"    …{a} tried") if a % 5000 == 0 else None)
+    if result["found"]:
+        _record_password(result["password"])
+        log(f"  CRACK {name}: FOUND \"{result['password']}\" "
+            f"in {result['attempts']} attempt(s)")
+        return {"needs_password": True, "opened": True,
+                "password": result["password"], "source": "cracked",
+                "attempts": result["attempts"]}
+    log(f"  CRACK {name}: not found ({result['reason']}, "
+        f"{result['attempts']} attempt(s))")
+    return {"needs_password": True, "opened": False, "password": None,
+            "source": "none", "attempts": result["attempts"]}
+
+
+def recovery_pass(project: dict, *, stop=None, log=None):
+    """Recover passwords for all selected files before processing.
+
+    Honours ``cracking.parallel_files`` (crack files concurrently vs serially).
+    """
+    log = log or (lambda _m: None)
+    stop = stop or (lambda: False)
+    cr = project.get("passwords", {}).get("cracking", {})
+    if not cr.get("enabled"):
+        return
+    files = selected_files(project)
+
+    def do(f):
+        if stop():
+            return
+        r = recover_password(f, project, stop=stop, log=log)
+        if r.get("opened") and r.get("password"):
+            f["password"] = r["password"]
+            f["password_source"] = r.get("source")
+        elif r.get("needs_password") and not r.get("opened"):
+            f["password_source"] = "none"
+
+    if cr.get("parallel_files") and len(files) > 1:
+        ts = [threading.Thread(target=do, args=(f,), daemon=True)
+              for f in files]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+    else:
+        for f in files:
+            if stop():
+                break
+            do(f)
+
+
 def _target_dir(path: str, dest_cfg: dict) -> str:
     if dest_cfg.get("dest") == "folder" and dest_cfg.get("folder"):
         return dest_cfg["folder"]
     return os.path.dirname(os.path.abspath(path))
 
 
-def run(project: dict, *, log=None, progress=None, stop=None) -> dict:
-    """Execute the project. Returns ``{ok, fail, skip}`` counts.
-
-    ``log(str)`` / ``progress(float 0..1)`` / ``stop()->bool`` are optional
-    callbacks so a GUI can stream output and cancel.
-    """
+# --------------------------------------------------------------------------- #
+#  Run                                                                          #
+# --------------------------------------------------------------------------- #
+def run(project: dict, *, log=None, progress=None, stop=None,
+        project_path=None) -> dict:
+    """Execute the project. Returns ``{ok, fail, skip}`` counts."""
     log = log or (lambda _m: None)
     progress = progress or (lambda _f: None)
     stop = stop or (lambda: False)
@@ -85,7 +205,20 @@ def run(project: dict, *, log=None, progress=None, stop=None) -> dict:
         log("No operations enabled (turn on Modify PDF and/or Decompile).")
         return {"ok": 0, "fail": 0, "skip": 0}
 
-    validate = project.get("modify_pdf", {}).get("mode") == "validate"
+    # Optional password-recovery pre-pass (cracking).
+    recovery_pass(project, stop=stop, log=log)
+
+    # Build the image analyzer once (if AI image analysis is on).
+    analyzer = None
+    mcfg = project.get("modify_pdf", {})
+    if "modify" in jobs and (mcfg.get("image_ai_analysis") or {}).get("enabled"):
+        mid = (mcfg.get("image_ai_analysis") or {}).get("model") or "img-blip-base"
+        try:
+            analyzer = models.make_image_captioner(mid, project, project_path)
+        except Exception:
+            analyzer = None
+
+    validate = mcfg.get("mode") == "validate"
     total = max(1, len(files) * max(1, len(jobs)))
     step = ok = fail = skip = 0
 
@@ -101,21 +234,22 @@ def run(project: dict, *, log=None, progress=None, stop=None) -> dict:
             skip += len(jobs); step += len(jobs); progress(step / total)
             continue
         if pres["needs_password"] and not pres["opened"]:
-            log(f"  SKIP {name}: locked (no working password found)")
+            log(f"  SKIP {name}: locked (no working password)")
             fentry["password_source"] = "none"
             skip += len(jobs); step += len(jobs); progress(step / total)
             continue
         working_pw = pres["password"] if pres["needs_password"] else None
         if pres["needs_password"]:
             fentry["password"] = working_pw
-            fentry["password_source"] = "provided/pool"
+            if fentry.get("password_source") not in ("cracked",):
+                fentry["password_source"] = "provided/pool"
+            _record_password(working_pw)
 
         stem, ext = os.path.splitext(name)
         tmp = None
         try:
             work_path = path
             if pres["needs_password"]:
-                # Backends open PDFs without a password; give them an unlocked copy.
                 tmp = pdf_info.make_decrypted_copy(path, working_pw)
                 work_path = tmp
 
@@ -124,7 +258,7 @@ def run(project: dict, *, log=None, progress=None, stop=None) -> dict:
                     break
                 try:
                     _run_one(job, project, path, work_path, stem, ext,
-                             validate, log)
+                             validate, analyzer, log)
                     ok += 1
                 except Exception as exc:  # noqa: BLE001
                     fail += 1
@@ -142,7 +276,8 @@ def run(project: dict, *, log=None, progress=None, stop=None) -> dict:
     return {"ok": ok, "fail": fail, "skip": skip}
 
 
-def _run_one(job, project, src_path, work_path, stem, ext, validate, log):
+def _run_one(job, project, src_path, work_path, stem, ext, validate, analyzer,
+             log):
     name = os.path.basename(src_path)
 
     if job == "modify":
@@ -151,11 +286,33 @@ def _run_one(job, project, src_path, work_path, stem, ext, validate, log):
         target = _target_dir(src_path, ocfg)
         os.makedirs(target, exist_ok=True)
         suffix = ocfg.get("suffix", "_noimg")
-        out_name = f"{stem}{suffix}{ext}"
-        out_path = os.path.join(target, out_name)
-        # Never overwrite the original.
+        out_path = os.path.join(target, f"{stem}{suffix}{ext}")
         if os.path.abspath(out_path) == os.path.abspath(src_path):
             out_path = os.path.join(target, f"{stem}_noimg{ext}")
+
+        if pdf_modify.has_advanced_options(mcfg) or analyzer is not None:
+            rep = pdf_modify.apply_modifications(
+                work_path, None if validate else out_path,
+                remove_images=mcfg.get("remove_images", True),
+                remove_vector=mcfg.get("remove_vector", False),
+                remove_restrictions=mcfg.get(
+                    "remove_restrictions_and_password", False),
+                text_replacements=mcfg.get("search_replace_text") or [],
+                image_replacements=mcfg.get("search_replace_image") or [],
+                image_analyzer=analyzer,
+                process_pages=mcfg.get("page_range", "all"),
+                keep_pages=mcfg.get("keep_pages", "all"),
+                validate=validate, log=log)
+            if rep.get("error"):
+                raise RuntimeError(rep["error"])
+            if validate:
+                return
+            log(f"  OK  {name} -> {os.path.basename(out_path)} "
+                f"(imgs:{rep['images_removed']} text:{rep['text_replacements']} "
+                f"imgreps:{rep['image_replacements']} pages:{rep['pages_kept']})")
+            return
+
+        # Simple, well-tested image-removal path.
         if validate:
             mode = ("images + figures" if mcfg.get("remove_vector")
                     else "images only")
