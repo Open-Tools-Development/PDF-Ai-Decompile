@@ -12,7 +12,7 @@ description: >
 version: "4.1"
 authors:
   - Jerry James
-  - Nisha
+  - Nisha Elizabeth
 org: Open-Tools-Development
 license: GPL-3.0
 repository: https://github.com/Open-Tools-Development/PDF-Ai-Decompile
