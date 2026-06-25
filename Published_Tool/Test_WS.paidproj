@@ -1,0 +1,238 @@
+{
+  "schema_version": 1,
+  "app": "PDF Ai Decompile",
+  "project": {
+    "name": "Test_WS",
+    "created": "2026-06-25T02:03:51+00:00",
+    "modified": "2026-06-25T02:07:53+00:00",
+    "assets_dir": "Test_WS"
+  },
+  "files": [
+    {
+      "path": "..\\Test_WS\\01.Open_IEEE_Papers\\A_Comprehensive_Survey_on_Cooperative_Intersection_Management_for_Heterogeneous_Connected_Vehicles.pdf",
+      "selected": true,
+      "password": null,
+      "password_source": null,
+      "info": {
+        "page_count": 36,
+        "size_bytes": 1547314,
+        "encrypted": false,
+        "needs_password": false,
+        "opened": true,
+        "permissions": {
+          "print": true,
+          "modify": true,
+          "copy": true,
+          "annotate": true,
+          "fill_forms": true,
+          "accessibility": true,
+          "assemble": true,
+          "print_hq": true
+        }
+      }
+    },
+    {
+      "path": "..\\Test_WS\\01.Open_IEEE_Papers\\A_Comprehensive_Survey_on_Vehicular_Networking_Communications_Applications_Challenges_and_Upcoming_Research_Directions.pdf",
+      "selected": true,
+      "password": null,
+      "password_source": null,
+      "info": {
+        "page_count": 54,
+        "size_bytes": 5630543,
+        "encrypted": false,
+        "needs_password": false,
+        "opened": true,
+        "permissions": {
+          "print": true,
+          "modify": true,
+          "copy": true,
+          "annotate": true,
+          "fill_forms": true,
+          "accessibility": true,
+          "assemble": true,
+          "print_hq": true
+        }
+      }
+    },
+    {
+      "path": "..\\Test_WS\\01.Open_IEEE_Papers\\A_Deep_Review_and_Analysis_of_Data_Exchange_in_Vehicle-to-Vehicle_Communications_Systems_Coherent_Taxonomy_Challenges_Motivatio.pdf",
+      "selected": true,
+      "password": null,
+      "password_source": null,
+      "info": {
+        "page_count": 30,
+        "size_bytes": 4925041,
+        "encrypted": false,
+        "needs_password": false,
+        "opened": true,
+        "permissions": {
+          "print": true,
+          "modify": true,
+          "copy": true,
+          "annotate": true,
+          "fill_forms": true,
+          "accessibility": true,
+          "assemble": true,
+          "print_hq": true
+        }
+      }
+    },
+    {
+      "path": "..\\Test_WS\\01.Open_IEEE_Papers\\A_Survey_of_the_Connected_Vehicle_LandscapeArchitectures_Enabling_Technologies_Applications_and_Development_Areas.pdf",
+      "selected": true,
+      "password": null,
+      "password_source": null,
+      "info": {
+        "page_count": 16,
+        "size_bytes": 1458049,
+        "encrypted": false,
+        "needs_password": false,
+        "opened": true,
+        "permissions": {
+          "print": true,
+          "modify": true,
+          "copy": true,
+          "annotate": true,
+          "fill_forms": true,
+          "accessibility": true,
+          "assemble": true,
+          "print_hq": true
+        }
+      }
+    },
+    {
+      "path": "..\\Test_WS\\01.Open_IEEE_Papers\\Attacks_on_Self-Driving_Cars_and_Their_Countermeasures_A_Survey.pdf",
+      "selected": true,
+      "password": null,
+      "password_source": null,
+      "info": {
+        "page_count": 35,
+        "size_bytes": 5093513,
+        "encrypted": false,
+        "needs_password": false,
+        "opened": true,
+        "permissions": {
+          "print": true,
+          "modify": true,
+          "copy": true,
+          "annotate": true,
+          "fill_forms": true,
+          "accessibility": true,
+          "assemble": true,
+          "print_hq": true
+        }
+      }
+    },
+    {
+      "path": "..\\Test_WS\\01.Open_IEEE_Papers\\Survey_of_Spectrum_Regulation_for_Intelligent_Transportation_Systems.pdf",
+      "selected": true,
+      "password": null,
+      "password_source": null,
+      "info": {
+        "page_count": 16,
+        "size_bytes": 2477926,
+        "encrypted": false,
+        "needs_password": false,
+        "opened": true,
+        "permissions": {
+          "print": true,
+          "modify": true,
+          "copy": true,
+          "annotate": true,
+          "fill_forms": true,
+          "accessibility": true,
+          "assemble": true,
+          "print_hq": true
+        }
+      }
+    },
+    {
+      "path": "..\\Test_WS\\01.Open_IEEE_Papers\\Vehicle_to_Pedestrian_Systems_Survey_Challenges_and_Recent_Trends.pdf",
+      "selected": true,
+      "password": null,
+      "password_source": null,
+      "info": {
+        "page_count": 14,
+        "size_bytes": 3101534,
+        "encrypted": false,
+        "needs_password": false,
+        "opened": true,
+        "permissions": {
+          "print": true,
+          "modify": true,
+          "copy": true,
+          "annotate": true,
+          "fill_forms": true,
+          "accessibility": true,
+          "assemble": true,
+          "print_hq": true
+        }
+      }
+    }
+  ],
+  "output": {
+    "modify": {
+      "dest": "folder",
+      "folder": "..\\Test_WS\\02.Modified_PDF_Papers",
+      "suffix": "_noimg"
+    },
+    "decompile": {
+      "dest": "beside",
+      "folder": ""
+    }
+  },
+  "modify_pdf": {
+    "enabled": true,
+    "mode": "execute",
+    "remove_images": true,
+    "remove_vector": false,
+    "remove_restrictions_and_password": false,
+    "search_replace_text": [],
+    "search_replace_image": [],
+    "image_ai_analysis": {
+      "enabled": true,
+      "model": "img-blip-base",
+      "user_model": ""
+    },
+    "page_range": "all",
+    "keep_pages": "all"
+  },
+  "decompile": {
+    "enabled": false,
+    "formats": [
+      "latex",
+      "markdown"
+    ],
+    "math_mode": "text",
+    "name_prefix_len": 9,
+    "out_prefix": "",
+    "page_range": "all"
+  },
+  "passwords": {
+    "pool": [],
+    "per_file": {},
+    "cracking": {
+      "enabled": false,
+      "method": "bruteforce",
+      "use_hidden_pool": false,
+      "parallel_files": false,
+      "bruteforce": {
+        "charset": "lower+digits",
+        "min_len": 1,
+        "max_len": 6,
+        "pattern": "",
+        "threads": 4,
+        "limit_type": "attempts",
+        "limit_value": 1000000
+      },
+      "model": {
+        "selected": [],
+        "user_models": []
+      }
+    }
+  },
+  "models": {
+    "dir": "models",
+    "installed": []
+  }
+}
