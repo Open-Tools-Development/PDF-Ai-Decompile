@@ -79,7 +79,8 @@ FEATURES = [
     "support \u2014 for PDFs you are authorised to open.",
     "Decompile \u2192 LaTeX: one compilable IEEEtran .tex per PDF (title, authors, "
     "abstract, sections, figure & table captions, \\cite{} and bibliography) "
-    "with four equation modes; or \u2192 Markdown (full text, no images).",
+    "with four equation modes; or \u2192 Markdown (full text, no images). A page "
+    "range can limit which pages are decompiled.",
     "Configurable short image names (e.g. Prefix_3_Fig-2.png) so several PDFs "
     "can safely share one Latex_Resource folder.",
 ]

@@ -236,12 +236,13 @@ def _load_user_module(path):
 #  Image captioner                                                             #
 # --------------------------------------------------------------------------- #
 def make_image_captioner(model_id="img-blip-base", project=None,
-                         project_path=None):
+                         project_path=None, user_model=None):
     """Return ``caption(png_bytes) -> str``. Uses a real model if available,
-    else a dependency-free heuristic."""
+    else a dependency-free heuristic. ``user_model`` (a local HF model dir or a
+    Hugging Face repo id) overrides ``model_id`` when given."""
     real = None
     if _transformers_available():
-        real = _try_load_blip(model_id, project, project_path)
+        real = _try_load_blip(user_model or model_id, project, project_path)
 
     def caption(png_bytes):
         if real is not None:
@@ -260,11 +261,15 @@ def _try_load_blip(model_id, project, project_path):
                                   BlipForConditionalGeneration)
         from PIL import Image
         meta = MANIFEST.get(model_id, {})
-        src = meta.get("repo", "Salesforce/blip-image-captioning-base")
-        if project is not None and project_path is not None:
-            local = os.path.join(models_dir(project, project_path), model_id)
-            if os.path.isdir(local) and os.listdir(local):
-                src = local
+        if meta:
+            src = meta.get("repo", "Salesforce/blip-image-captioning-base")
+            if project is not None and project_path is not None:
+                local = os.path.join(models_dir(project, project_path), model_id)
+                if os.path.isdir(local) and os.listdir(local):
+                    src = local
+        else:
+            # A user-supplied local dir or Hugging Face repo id.
+            src = model_id
         processor = BlipProcessor.from_pretrained(src)
         model = BlipForConditionalGeneration.from_pretrained(src)
 
