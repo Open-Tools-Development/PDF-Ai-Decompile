@@ -34,4 +34,35 @@ Consider following points
    13. when we load the Ai Modeles, I am not sure wheather we can pack along with our tool or needs to give user to download or can we download automatically when needed, suggest which all the best approach. 
    14. If required consider creating the Project folder with the Project file name ( it needs to be same as Project name) in the same place where the project file is stored and have all required files including the different modeles user might download or we might download for out tool. Make sure all these information shall be stored in the project file so that can use when next time it load, and in project file try to keep all path as relative if possible to make its compactable when project copied to some new location.
 
+----------------------------------------------------------
+
+# Improvement Idea 3
+
+Thanks, Its worked, found few more issue and improvement required.
+
+1. In File perpasword option the box for give the pasword is not visible when file name is bitter, So it could be better if you can five its as 2 column, and also enable horizontal scrolling in both column so that user can scrole and se the name. And if possible Show the files only which have some sort of pasward.
+2. In the file tab also when file name is long other column info like sizs, Pages and Lock is not alined with the column headings, Please fix then also. and also add a new column to show wheather the file is protected by pasword, and wheather there is any restruction like block copying or print and so present, If present then list then all in a short way.
+3. In "Modify PDF" tab, Please add a tab to add following new options
+   3.1 Add Option for adding new pasword for all files, Also give option to give option to generate new random pasward for each file, If this option is enabled after pdf is generated please generale a .csv file with file name and Random pasword in the same folder where PDF is generated, If chose all in one folder then keep only one file with pasward info for all files along with there pasword. So keep one file per folder.
+   3.2, Add option to enable the different restructions in the PDF and you can make new pasword is one of the option.
+   3.3. Give the Option to change the property of the PDF, In inspection Tab also show all property of the pdf and also show different resection is place for each PDF.
+4. In "Modify PDF" tab, default there is a big blank space between "Search & replace text"  option label and its button to add, Once we start adding the search and replave text it stddenely string and compat as we needed, can you make it compact as default also. Same issue for "Search & replace image"  option Please fix them all.
+5. In "Modify PDF" tab, the full window is not used effectively because we added options vertically, can we make both "Modify PDF" tab and "Decompile to Test" Tab as a 2 column approach to arrange a configuration and make sure all are dynamic. And which ever option required full width please use then and when we did not need full with then split and also make sure when we split it shall not affect the redibility and understandability for the user. 
+6. Ai Model Download is not working. So can we move AI model download and configuration to a new tab common tab in which we can create an additional sub tab for each model  we are going to download and configure to run in native PC.
+  6.1 For we model needed for each atomic activity and based on that out input and output to a model may change so based on the each use we progressively make you make the category for the model, 
+  6.2 In the Model tab, there need a Coomon Tab By default which may have generic configuration for model like as mentioned below
+     6.2.1  Where to store all models folder. All downloaded model needs to have its owen folder created in this folder and required configuration shall be stored in a saverate file, 
+     6.2.2 Configuration of each Model category , If it not changebal just display and not allow to change
+     6.3.3 Add all other required common think you feel may required and needs to use to give full control to use and always set then with a appropriate default value and shall be self explanatory else also add test to get clear idea,
+  6.3. In each model tab have option to download the model and load then and add step to do a basic test.
+  6.4. To add user owen model please give a detailed guid hoe to add and integrate and help with basic test to make sure  it work for the intended category. 
+  6.5 At present we have 2 category, one to handle pasword and another to explain what is inside an Image. We may also reuse same catagory in other place lile Image one we may use in "Decompile to Test" when we progress on new features. 
+  6.6 Also give option to download model and paramater from any place like hugging space and import to out tool. in a tab.
+  6.7 In download option few open site from where we can download like hugging space and tool itself fetch applicable models based on native PC configuration and category rule so that its easy for user to select. amd also give user to override option but give warning that working may not garmented. In Model validatation also give user to override force use, other also give appropriate warning. 
+
+----------------------------------------------------------
+
+# Improvement Idea 4
+
+
 

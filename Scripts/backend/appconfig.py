@@ -76,7 +76,29 @@ def default_config() -> dict:
         "schema_version": CONFIG_SCHEMA_VERSION,
         "recent_projects": [],   # [{"name", "path", "opened"}], newest first
         "last_project": None,
+        "models_root": None,     # None → <config>/models (the shared cache)
     }
+
+
+def default_models_root() -> str:
+    return os.path.join(user_config_dir(), "models")
+
+
+def models_root(cfg: dict | None = None) -> str:
+    """Return (and create) the folder where downloaded models are stored."""
+    cfg = cfg if cfg is not None else load_config()
+    root = cfg.get("models_root") or default_models_root()
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def set_models_root(path: str, cfg: dict | None = None) -> dict:
+    cfg = cfg if cfg is not None else load_config()
+    cfg["models_root"] = path or None
+    save_config(cfg)
+    if path:
+        os.makedirs(path, exist_ok=True)
+    return cfg
 
 
 def load_config() -> dict:

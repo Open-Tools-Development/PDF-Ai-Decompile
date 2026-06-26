@@ -9,7 +9,7 @@ description: >
   (3) convert a PDF into a full-text Markdown file with no images. The LaTeX and
   Markdown outputs are optimised for AI tools to read without processing the PDF.
   Use this document to understand the whole tool before modifying or extending it.
-version: "4.1"
+version: "4.3"
 authors:
   - Jerry James
   - Nisha Elizabeth
@@ -100,7 +100,8 @@ PDF-Ai-Decompile/
     │   ├─ pdf_info.py           Scan / password / page-render (Inspector) (§13)
     │   ├─ pdf_modify.py         Advanced Modify pipeline (text/image/pages) (§13)
     │   ├─ passwords.py          Brute force + encrypted reuse pool (§13)
-    │   ├─ models.py             AI-model framework (pw generators / captioner) (§13)
+    │   ├─ models.py             AI-model framework: catalog/categories,
+    │   │                        download/import/register, hardware, self-test (§13)
     │   ├─ runner.py             Headless project runner (resolve pw → jobs) (§13)
     │   ├─ pdf_common.py         Shared parser + text→LaTeX + image extraction
     │   ├─ pdf_remove.py         Image removal (UI: "Modify PDF")
@@ -345,7 +346,8 @@ symmetry but Markdown is always full-text, no images (ideal for AI ingestion).
     header toolbar — both call `new_project` / `open_project` / `save_project` /
     `save_project_as` / `_popup_recent`. Recent list comes from
     `backend.appconfig`.
-  - **Tabs** (`CTkTabview`): **Files** (add files/folders, per-row select
+  - **Tabs** (`CTkTabview`): Files · Modify PDF · Decompile to Text · Passwords ·
+    **Models** · Inspector. **Files** (add files/folders, per-row select
     checkbox + remove, Select all/none, filter by Name/Path/Size/Pages →
     `_render_files`/`_filtered_files`), **Modify PDF** (`modify_enabled`,
     `modify_mode` execute|validate, `remove_mode`, output panel + suffix),
@@ -474,7 +476,14 @@ remove restrictions & password (saves unencrypted via PyMuPDF — no `pikepdf`
 needed), search-&-replace **text** (literal or regex, via redaction +
 re-insert), search-&-replace **image** (similarity match → delete/replace),
 **AI image analysis** (captions via `backend.models`), **page range** to process
-and **pages to keep**. All best-effort (a PDF is not a word processor).
+and **pages to keep**, **output security** (set a new open password — fixed or
+random-per-file; apply owner-password restrictions) and **document properties**
+(title/author/subject/keywords). Random/owner passwords are written to one
+`modified_passwords.csv` per output folder (`runner._write_password_csvs`). All
+best-effort (a PDF is not a word processor). The Modify and Decompile tabs use a
+two-column layout; the Files tab shares one grid for header+rows (aligned
+columns incl. Protected/Restrictions); the per-file password list shows only
+protected files in two columns.
 
 ### 13.4 Decompile to Text (IMPLEMENTED — items 4, 5, 11)
 Pick any of LaTeX / Markdown; same output-dest model (beside / chosen folder).
@@ -529,6 +538,27 @@ heuristic. Users add their own **password** generator as a `.py` exposing
   passwords), yield candidate strings* — which the cracking engine then tests
   against the PDF. Image analysis (item 11) is the opposite: real HF
   vision-language/caption models (e.g. BLIP) work well and download-on-demand.
+
+### 13.6b Models tab (IMPLEMENTED — item 6)
+A dedicated **Models** top-level tab with a sub-tabview:
+- **Overview** — the shared **models folder** (`appconfig.models_root`, default
+  `<config>/models`; each model in its own subfolder + `model.json`),
+  **environment/hardware** (`models.hardware_info`: CPU/RAM/GPU + whether
+  `huggingface_hub` / `transformers`+`torch` are installed), and the read-only
+  **category rules** (`models.CATEGORIES`: I/O contract, "fixed").
+- **Password** / **Image** sub-tabs (`_build_category_subtab`) — list curated +
+  user models with status (`install_status`) and hardware applicability
+  (`applicable` → ⚠ reasons), **Download** / **Test** (`self_test`) per model,
+  and **Add your own** (`register_user_model`; password = a `.py` with
+  `generate(hints)`, image = a HF id/local folder).
+- **Import (HF)** — `import_hf_model(repo, category)` downloads any HF repo into
+  the models folder and registers it; links to open Hugging Face.
+Overrides: downloading a not-recommended model warns first ("Download anyway?").
+Categories today: **password** and **image** (the image captioner is reusable in
+Decompile later). **Download/import need `huggingface_hub`; image models need
+`transformers`+`torch`** — the tab shows what's missing (this was the cause of
+"download not working"). Built-in password models and the heuristic captioner
+need nothing.
 
 ### 13.7 Dependencies
 Core stays the same (`PyMuPDF`, `customtkinter`, `Pillow`) — restrictions/

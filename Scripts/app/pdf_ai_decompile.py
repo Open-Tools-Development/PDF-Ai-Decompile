@@ -220,6 +220,26 @@ class App(ctk.CTk):
         self.process_pages = tk.StringVar(value="all")
         self.keep_pages = tk.StringVar(value="all")
         self.dec_pages = tk.StringVar(value="all")   # Decompile page range
+
+        # Output security + document properties.
+        self.sec_pw_mode = tk.StringVar(value="none")    # none|fixed|random
+        self.sec_user_pw = tk.StringVar(value="")
+        self.sec_restrict = tk.BooleanVar(value=False)
+        self.sec_owner_pw = tk.StringVar(value="")
+        self.sec_perms = {name: tk.BooleanVar(value=True)
+                          for name in ("print", "copy", "modify", "annotate",
+                                       "fill_forms", "accessibility",
+                                       "assemble", "print_hq")}
+        self.meta_title = tk.StringVar(value="")
+        self.meta_author = tk.StringVar(value="")
+        self.meta_subject = tk.StringVar(value="")
+        self.meta_keywords = tk.StringVar(value="")
+
+        # Models tab.
+        self.models_root_var = tk.StringVar(value="")
+        self.import_repo = tk.StringVar(value="")
+        self.import_category = tk.StringVar(value="image")
+        self._cat_user_inputs = {}   # category -> (name_var, source_var)
         self._text_rep_rows = []     # (find_var, replace_var, regex_var)
         self._img_rep_rows = []      # (image_var, pct_var, action_var, repl_var)
 
@@ -360,12 +380,13 @@ class App(ctk.CTk):
         self.tabview = ctk.CTkTabview(self)
         self.tabview.grid(row=1, column=0, sticky="nsew", padx=12, pady=(8, 4))
         for name in ("Files", "Modify PDF", "Decompile to Text",
-                     "Passwords", "Inspector"):
+                     "Passwords", "Models", "Inspector"):
             self.tabview.add(name)
         self._build_files_tab(self.tabview.tab("Files"))
         self._build_modify_tab(self.tabview.tab("Modify PDF"))
         self._build_decompile_tab(self.tabview.tab("Decompile to Text"))
         self._build_passwords_tab(self.tabview.tab("Passwords"))
+        self._build_models_tab(self.tabview.tab("Models"))
         self._build_inspector_tab(self.tabview.tab("Inspector"))
 
         # ---- Run bar ----
@@ -435,19 +456,26 @@ class App(ctk.CTk):
                       hover_color="gray25",
                       command=self._reset_filter).pack(side="left", padx=2)
 
-        hdr = ctk.CTkFrame(tab, fg_color=("gray85", "gray20"))
-        hdr.grid(row=2, column=0, sticky="ew", pady=(6, 0))
-        for txt, w in (("✓", 36), ("File name", 360), ("Size", 90),
-                       ("Pages", 70), ("Lock", 70), ("", 40)):
-            ctk.CTkLabel(hdr, text=txt, width=w, anchor="w",
-                         font=ctk.CTkFont(size=11, weight="bold")).pack(
-                side="left", padx=4)
-
+        # Header + rows share one grid (in the scrollable frame) so columns
+        # stay aligned regardless of file-name length.
         self.files_frame = ctk.CTkScrollableFrame(tab, label_text="")
-        self.files_frame.grid(row=3, column=0, sticky="nsew", pady=(0, 4))
+        self.files_frame.grid(row=2, column=0, sticky="nsew", pady=(4, 4))
         self.files_count = ctk.CTkLabel(tab, text="Queued: 0  |  selected: 0",
                                         anchor="w")
-        self.files_count.grid(row=4, column=0, sticky="w", padx=4, pady=(0, 4))
+        self.files_count.grid(row=3, column=0, sticky="w", padx=4, pady=(0, 4))
+
+    # Column layout shared by the Files-tab header and every data row.
+    FILE_COLS = [("✓", 30, 0), ("File name", 300, 1), ("Size", 80, 0),
+                 ("Pages", 60, 0), ("Protected", 110, 0),
+                 ("Restrictions", 170, 0), ("", 34, 0)]
+    _PERM_SHORT = {"print": "print", "copy": "copy", "modify": "edit",
+                   "annotate": "annot", "fill_forms": "forms",
+                   "accessibility": "a11y", "assemble": "assemble",
+                   "print_hq": "hi-print"}
+
+    @staticmethod
+    def _ellipsize(text, limit=44):
+        return text if len(text) <= limit else "…" + text[-(limit - 1):]
 
     def _reset_filter(self):
         self.filter_value.set("")
@@ -482,33 +510,57 @@ class App(ctk.CTk):
                 return files   # bad numeric input -> show everything
         return out
 
+    def _protected_text(self, info):
+        if not info.get("encrypted"):
+            return "No"
+        if info.get("needs_password") and not info.get("opened"):
+            return "Yes \U0001F512"
+        return "Yes"
+
+    def _restrictions_text(self, info):
+        perms = info.get("permissions")
+        if perms is None:
+            return "?" if info.get("encrypted") else "—"
+        denied = [self._PERM_SHORT.get(k, k) for k, v in perms.items() if not v]
+        return "no " + ", ".join(sorted(denied)) if denied else "—"
+
     def _render_files(self):
         for child in self.files_frame.winfo_children():
             child.destroy()
         self._file_rows = []
+        for col, (_t, w, weight) in enumerate(self.FILE_COLS):
+            self.files_frame.grid_columnconfigure(col, minsize=w, weight=weight)
+        # Header row.
+        for col, (txt, _w, _wt) in enumerate(self.FILE_COLS):
+            ctk.CTkLabel(self.files_frame, text=txt, anchor="w",
+                         font=ctk.CTkFont(size=11, weight="bold")).grid(
+                row=0, column=col, sticky="w", padx=4, pady=(0, 4))
+
         entries = self._filtered_files()
-        for e in entries:
+        for i, e in enumerate(entries, start=1):
             info = e.get("info", {})
-            row = ctk.CTkFrame(self.files_frame, fg_color="transparent")
-            row.pack(fill="x", pady=1)
             var = tk.BooleanVar(value=e.get("selected", True))
-            ctk.CTkCheckBox(row, text="", width=36, variable=var,
+            ctk.CTkCheckBox(self.files_frame, text="", width=24, variable=var,
                             command=lambda en=e, v=var: self._set_selected(en, v)
-                            ).pack(side="left", padx=4)
-            ctk.CTkLabel(row, text=os.path.basename(e["path"]), width=360,
-                         anchor="w").pack(side="left", padx=4)
-            ctk.CTkLabel(row, text=pdf_info.human_size(info.get("size_bytes")),
-                         width=90, anchor="w").pack(side="left", padx=4)
+                            ).grid(row=i, column=0, padx=4, pady=1)
+            ctk.CTkLabel(self.files_frame,
+                         text=self._ellipsize(os.path.basename(e["path"])),
+                         anchor="w").grid(row=i, column=1, sticky="w", padx=4)
+            ctk.CTkLabel(self.files_frame,
+                         text=pdf_info.human_size(info.get("size_bytes")),
+                         anchor="w").grid(row=i, column=2, sticky="w", padx=4)
             pc = info.get("page_count")
-            ctk.CTkLabel(row, text=("?" if pc is None else str(pc)), width=70,
-                         anchor="w").pack(side="left", padx=4)
-            locked = info.get("needs_password") and not info.get("opened")
-            ctk.CTkLabel(row, text=("\U0001F512" if locked else ""), width=70,
-                         anchor="w").pack(side="left", padx=4)
-            ctk.CTkButton(row, text="✕", width=30, fg_color="gray30",
-                          hover_color="#b91c1c",
-                          command=lambda en=e: self._remove_file(en)).pack(
-                side="left", padx=4)
+            ctk.CTkLabel(self.files_frame, text=("?" if pc is None else str(pc)),
+                         anchor="w").grid(row=i, column=3, sticky="w", padx=4)
+            ctk.CTkLabel(self.files_frame, text=self._protected_text(info),
+                         anchor="w").grid(row=i, column=4, sticky="w", padx=4)
+            ctk.CTkLabel(self.files_frame, text=self._restrictions_text(info),
+                         anchor="w", font=ctk.CTkFont(size=11)).grid(
+                row=i, column=5, sticky="w", padx=4)
+            ctk.CTkButton(self.files_frame, text="✕", width=28,
+                          fg_color="gray30", hover_color="#b91c1c",
+                          command=lambda en=e: self._remove_file(en)).grid(
+                row=i, column=6, padx=4, pady=1)
             self._file_rows.append((e, var))
         self._update_file_count()
 
@@ -588,57 +640,130 @@ class App(ctk.CTk):
         tab.grid_columnconfigure(0, weight=1)
         body = ctk.CTkScrollableFrame(tab, label_text="")
         body.grid(row=0, column=0, sticky="nsew")
-        body.grid_columnconfigure(0, weight=1)
-        r = 0
+        body.grid_columnconfigure(0, weight=1, uniform="mod")
+        body.grid_columnconfigure(1, weight=1, uniform="mod")
 
         ctk.CTkCheckBox(body, text="Enable “Modify PDF” in the run",
                         variable=self.modify_enabled,
                         font=ctk.CTkFont(size=14, weight="bold")).grid(
-            row=r, column=0, sticky="w", padx=8, pady=(8, 6)); r += 1
+            row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 6))
 
-        mode = ctk.CTkFrame(body)
-        mode.grid(row=r, column=0, sticky="ew", padx=8, pady=4); r += 1
-        ctk.CTkLabel(mode, text="Run mode", font=ctk.CTkFont(weight="bold"),
+        # Two columns for the compact option groups; wide editors span both.
+        def left(panel, row):
+            panel.grid(row=row, column=0, sticky="new", padx=(8, 4), pady=4)
+
+        def right(panel, row):
+            panel.grid(row=row, column=1, sticky="new", padx=(4, 8), pady=4)
+
+        left(self._build_mode_panel(body), 1)
+        right(self._build_what_panel(body), 1)
+        left(self._build_pages_panel(body), 2)
+        right(self._build_security_panel(body), 2)
+        left(self._build_metadata_panel(body), 3)
+        right(self._build_ai_analysis_panel(body), 3)
+        self._build_text_rep_editor(body).grid(
+            row=4, column=0, columnspan=2, sticky="ew", padx=8, pady=4)
+        self._build_img_rep_editor(body).grid(
+            row=5, column=0, columnspan=2, sticky="ew", padx=8, pady=4)
+        self._build_output_panel(body, row=6, dest_var=self.dest_modify,
+                                 folder_var=self.folder_modify,
+                                 title="Output location (Modify PDF)",
+                                 suffix_var=self.suffix, columnspan=2)
+
+    def _build_mode_panel(self, parent):
+        f = ctk.CTkFrame(parent)
+        ctk.CTkLabel(f, text="Run mode", font=ctk.CTkFont(weight="bold"),
                      anchor="w").pack(fill="x", padx=10, pady=(8, 2))
-        ctk.CTkRadioButton(mode, text="Execute — write the modified PDF",
+        ctk.CTkRadioButton(f, text="Execute — write the modified PDF",
                            variable=self.modify_mode, value="execute").pack(
             anchor="w", padx=16, pady=2)
         ctk.CTkRadioButton(
-            mode, text="Validate — don’t write; report what would change "
-                       "(see Inspector)",
+            f, text="Validate — don’t write; report changes (see Inspector)",
             variable=self.modify_mode, value="validate").pack(
-            anchor="w", padx=16, pady=2)
+            anchor="w", padx=16, pady=(2, 8))
+        return f
 
-        what = ctk.CTkFrame(body)
-        what.grid(row=r, column=0, sticky="ew", padx=8, pady=4); r += 1
-        ctk.CTkLabel(what, text="What to remove",
+    def _build_what_panel(self, parent):
+        f = ctk.CTkFrame(parent)
+        ctk.CTkLabel(f, text="What to remove",
                      font=ctk.CTkFont(weight="bold"), anchor="w").pack(
             fill="x", padx=10, pady=(8, 2))
         ctk.CTkRadioButton(
-            what, text="Remove images only (keep charts, tables, layout)",
+            f, text="Remove images only (keep charts, tables, layout)",
             variable=self.remove_mode, value="images").pack(
             anchor="w", padx=16, pady=2)
         ctk.CTkRadioButton(
-            what, text="Remove images + figures/charts (text-only result)",
+            f, text="Remove images + figures/charts (text-only result)",
             variable=self.remove_mode, value="all").pack(
             anchor="w", padx=16, pady=2)
         ctk.CTkCheckBox(
-            what, text="Also remove restrictions & password (save an unlocked "
-                       "copy)", variable=self.remove_restrictions).pack(
+            f, text="Remove existing restrictions & password (unlocked copy)",
+            variable=self.remove_restrictions).pack(
             anchor="w", padx=16, pady=(2, 8))
+        return f
 
-        self._build_text_rep_editor(body).grid(row=r, column=0, sticky="ew",
-                                               padx=8, pady=4); r += 1
-        self._build_img_rep_editor(body).grid(row=r, column=0, sticky="ew",
-                                              padx=8, pady=4); r += 1
-        self._build_ai_analysis_panel(body).grid(row=r, column=0, sticky="ew",
-                                                 padx=8, pady=4); r += 1
-        self._build_pages_panel(body).grid(row=r, column=0, sticky="ew",
-                                           padx=8, pady=4); r += 1
-        self._build_output_panel(body, row=r, dest_var=self.dest_modify,
-                                 folder_var=self.folder_modify,
-                                 title="Output location (Modify PDF)",
-                                 suffix_var=self.suffix); r += 1
+    # ---- Modify: output security (set password / restrictions) ----
+    def _build_security_panel(self, parent):
+        f = ctk.CTkFrame(parent)
+        ctk.CTkLabel(f, text="Output security",
+                     font=ctk.CTkFont(weight="bold"), anchor="w").pack(
+            fill="x", padx=10, pady=(8, 2))
+        r1 = ctk.CTkFrame(f, fg_color="transparent")
+        r1.pack(fill="x", padx=14, pady=2)
+        ctk.CTkLabel(r1, text="Set open password:").pack(side="left",
+                                                         padx=(0, 6))
+        ctk.CTkOptionMenu(r1, variable=self.sec_pw_mode, width=120,
+                          values=["none", "fixed", "random"]).pack(side="left")
+        ctk.CTkEntry(r1, textvariable=self.sec_user_pw, width=130,
+                     placeholder_text="fixed password").pack(side="left",
+                                                              padx=6)
+        ctk.CTkCheckBox(f, text="Apply restrictions (owner password)",
+                        variable=self.sec_restrict).pack(
+            anchor="w", padx=14, pady=(4, 2))
+        perms = ctk.CTkFrame(f, fg_color="transparent")
+        perms.pack(fill="x", padx=20, pady=2)
+        labels = {"print": "print", "copy": "copy", "modify": "edit",
+                  "annotate": "annotate", "fill_forms": "forms",
+                  "accessibility": "accessibility", "assemble": "assemble",
+                  "print_hq": "hi-res print"}
+        for i, (name, lbl) in enumerate(labels.items()):
+            ctk.CTkCheckBox(perms, text=f"allow {lbl}", width=130,
+                            variable=self.sec_perms[name],
+                            font=ctk.CTkFont(size=11)).grid(
+                row=i // 2, column=i % 2, sticky="w", padx=4, pady=1)
+        r3 = ctk.CTkFrame(f, fg_color="transparent")
+        r3.pack(fill="x", padx=14, pady=(2, 2))
+        ctk.CTkLabel(r3, text="Owner password:").pack(side="left", padx=(0, 6))
+        ctk.CTkEntry(r3, textvariable=self.sec_owner_pw, width=130,
+                     placeholder_text="blank = random").pack(side="left")
+        ctk.CTkLabel(f, text="“random” open passwords are written to "
+                             "modified_passwords.csv in each output folder.",
+                     text_color="gray", font=ctk.CTkFont(size=11),
+                     wraplength=300, justify="left", anchor="w").pack(
+            fill="x", padx=10, pady=(2, 8))
+        return f
+
+    # ---- Modify: document properties (metadata) ----
+    def _build_metadata_panel(self, parent):
+        f = ctk.CTkFrame(parent)
+        ctk.CTkLabel(f, text="Document properties",
+                     font=ctk.CTkFont(weight="bold"), anchor="w").pack(
+            fill="x", padx=10, pady=(8, 2))
+        for label, var in (("Title", self.meta_title),
+                           ("Author", self.meta_author),
+                           ("Subject", self.meta_subject),
+                           ("Keywords", self.meta_keywords)):
+            row = ctk.CTkFrame(f, fg_color="transparent")
+            row.pack(fill="x", padx=14, pady=1)
+            ctk.CTkLabel(row, text=label + ":", width=70, anchor="w").pack(
+                side="left")
+            ctk.CTkEntry(row, textvariable=var, width=200,
+                         placeholder_text="(leave blank to keep)").pack(
+                side="left", fill="x", expand=True)
+        ctk.CTkLabel(f, text="Blank fields are left unchanged.",
+                     text_color="gray", font=ctk.CTkFont(size=11),
+                     anchor="w").pack(fill="x", padx=10, pady=(2, 8))
+        return f
 
     # ---- Modify: search & replace text editor ----
     def _build_text_rep_editor(self, parent):
@@ -646,7 +771,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(f, text="Search & replace text",
                      font=ctk.CTkFont(weight="bold"), anchor="w").pack(
             fill="x", padx=10, pady=(8, 2))
-        self.text_rep_holder = ctk.CTkFrame(f, fg_color="transparent")
+        self.text_rep_holder = ctk.CTkFrame(f, fg_color="transparent", height=0)
         self.text_rep_holder.pack(fill="x", padx=8)
         ctk.CTkButton(f, text="+ Add text rule", width=130,
                       command=lambda: self._add_text_rep_row()).pack(
@@ -682,7 +807,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(f, text="Search & replace image",
                      font=ctk.CTkFont(weight="bold"), anchor="w").pack(
             fill="x", padx=10, pady=(8, 2))
-        self.img_rep_holder = ctk.CTkFrame(f, fg_color="transparent")
+        self.img_rep_holder = ctk.CTkFrame(f, fg_color="transparent", height=0)
         self.img_rep_holder.pack(fill="x", padx=8)
         ctk.CTkButton(f, text="+ Add image rule", width=140,
                       command=lambda: self._add_img_rep_row()).pack(
@@ -791,24 +916,31 @@ class App(ctk.CTk):
 
     # ========================== Decompile tab ========================== #
     def _build_decompile_tab(self, tab):
+        tab.grid_rowconfigure(0, weight=1)
         tab.grid_columnconfigure(0, weight=1)
-        ctk.CTkCheckBox(tab, text="Enable “Decompile to Text” in the run",
+        body = ctk.CTkScrollableFrame(tab, label_text="")
+        body.grid(row=0, column=0, sticky="nsew")
+        body.grid_columnconfigure(0, weight=1, uniform="dec")
+        body.grid_columnconfigure(1, weight=1, uniform="dec")
+
+        ctk.CTkCheckBox(body, text="Enable “Decompile to Text” in the run",
                         variable=self.dec_enabled,
                         font=ctk.CTkFont(size=14, weight="bold")).grid(
-            row=0, column=0, sticky="w", padx=8, pady=(10, 6))
+            row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 6))
 
-        fmt = ctk.CTkFrame(tab)
-        fmt.grid(row=1, column=0, sticky="ew", padx=8, pady=4)
+        fmt = ctk.CTkFrame(body)
+        fmt.grid(row=1, column=0, sticky="new", padx=(8, 4), pady=4)
         ctk.CTkLabel(fmt, text="Output formats",
                      font=ctk.CTkFont(weight="bold"), anchor="w").pack(
             fill="x", padx=10, pady=(8, 2))
         ctk.CTkCheckBox(fmt, text="LaTeX (.tex + Latex_Resource)",
                         variable=self.fmt_latex).pack(anchor="w", padx=16, pady=2)
         ctk.CTkCheckBox(fmt, text="Markdown (.md, full text)",
-                        variable=self.fmt_md).pack(anchor="w", padx=16, pady=2)
+                        variable=self.fmt_md).pack(anchor="w", padx=16,
+                                                   pady=(2, 8))
 
-        mm = ctk.CTkFrame(tab)
-        mm.grid(row=2, column=0, sticky="ew", padx=8, pady=4)
+        mm = ctk.CTkFrame(body)
+        mm.grid(row=1, column=1, rowspan=2, sticky="new", padx=(4, 8), pady=4)
         ctk.CTkLabel(mm, text="Equation handling (LaTeX)",
                      font=ctk.CTkFont(weight="bold"), anchor="w").pack(
             fill="x", padx=10, pady=(8, 2))
@@ -816,8 +948,11 @@ class App(ctk.CTk):
             ctk.CTkRadioButton(mm, text=label, variable=self.math_mode,
                                value=value).pack(anchor="w", padx=16, pady=1)
 
-        names = ctk.CTkFrame(tab)
-        names.grid(row=3, column=0, sticky="ew", padx=8, pady=4)
+        names = ctk.CTkFrame(body)
+        names.grid(row=2, column=0, sticky="new", padx=(8, 4), pady=4)
+        ctk.CTkLabel(names, text="Naming & pages",
+                     font=ctk.CTkFont(weight="bold"), anchor="w").pack(
+            fill="x", padx=10, pady=(8, 2))
         prow = ctk.CTkFrame(names, fg_color="transparent")
         prow.pack(fill="x", padx=10, pady=(8, 2))
         ctk.CTkLabel(prow, text="Output name prefix (optional):").pack(
@@ -841,15 +976,17 @@ class App(ctk.CTk):
         ctk.CTkLabel(prow2, text="all = every page, or e.g. 1-3,5",
                      text_color="gray").pack(side="left", padx=8)
 
-        self._build_output_panel(tab, row=4, dest_var=self.dest_dec,
+        self._build_output_panel(body, row=3, dest_var=self.dest_dec,
                                  folder_var=self.folder_dec,
-                                 title="Output location (Decompile to Text)")
+                                 title="Output location (Decompile to Text)",
+                                 columnspan=2)
 
     # Shared output-destination panel (beside / chosen folder).
     def _build_output_panel(self, tab, row, dest_var, folder_var, title,
-                            suffix_var=None):
+                            suffix_var=None, column=0, columnspan=1):
         p = ctk.CTkFrame(tab)
-        p.grid(row=row, column=0, sticky="ew", padx=8, pady=4)
+        p.grid(row=row, column=column, columnspan=columnspan, sticky="ew",
+               padx=8, pady=4)
         ctk.CTkLabel(p, text=title, font=ctk.CTkFont(weight="bold"),
                      anchor="w").pack(fill="x", padx=10, pady=(8, 2))
         ctk.CTkRadioButton(p, text="Beside each input PDF",
@@ -1012,24 +1149,23 @@ class App(ctk.CTk):
             self.user_model_path.set(path)
 
     def _download_selected_image_model(self):
-        if not self.project_path:
+        if not models.huggingface_hub_available():
             messagebox.showinfo(
                 about_info.APP_NAME,
-                "Save the project first — models are downloaded into the "
-                "project's folder.")
+                "Downloads need the 'huggingface_hub' package.\n\n"
+                "Install it with:  pip install huggingface_hub\n\n"
+                "Manage and test models in the Models tab.")
             return
-        self._gather_ui_to_project()
         mid = self.ai_model.get()
+        self._log(f"Downloading model {mid}… (see the Models tab to manage)")
 
         def work():
             try:
-                self.msg_queue.put(("log", f"Downloading model {mid}…"))
-                path = models.download_model(
-                    mid, self.project, self.project_path,
-                    progress=lambda m: self.msg_queue.put(("log", m)))
-                self.msg_queue.put(("log", f"Model ready: {path or '(built-in)'}"))
+                models.download_model(
+                    mid, progress=lambda m: self.msg_queue.put(("log", m)))
             except Exception as exc:  # noqa: BLE001
                 self.msg_queue.put(("log", f"Download failed: {exc}"))
+            self.msg_queue.put(("models_refresh", "image"))
         threading.Thread(target=work, daemon=True).start()
 
     def crack_now(self):
@@ -1056,17 +1192,39 @@ class App(ctk.CTk):
         for child in self.perfile_frame.winfo_children():
             child.destroy()
         self._perfile_vars = {}
+        self.perfile_frame.grid_columnconfigure(0, weight=1, minsize=150)
+        self.perfile_frame.grid_columnconfigure(1, weight=0, minsize=150)
         per_file = self.project["passwords"].get("per_file", {})
-        for e in self.project["files"]:
+        # Only files that are actually password-protected (item 1).
+        encrypted = [e for e in self.project["files"]
+                     if (e.get("info") or {}).get("encrypted")
+                     or (e.get("info") or {}).get("needs_password")]
+        if not encrypted:
+            ctk.CTkLabel(self.perfile_frame,
+                         text="No password-protected files in the list.",
+                         text_color="gray").grid(row=0, column=0, columnspan=2,
+                                                  sticky="w", padx=6, pady=6)
+            return
+        ctk.CTkLabel(self.perfile_frame, text="File", anchor="w",
+                     font=ctk.CTkFont(size=11, weight="bold")).grid(
+            row=0, column=0, sticky="w", padx=4, pady=(0, 4))
+        ctk.CTkLabel(self.perfile_frame, text="Password", anchor="w",
+                     font=ctk.CTkFont(size=11, weight="bold")).grid(
+            row=0, column=1, sticky="w", padx=4, pady=(0, 4))
+        for i, e in enumerate(encrypted, start=1):
             path = e["path"]
-            row = ctk.CTkFrame(self.perfile_frame, fg_color="transparent")
-            row.pack(fill="x", pady=1)
-            ctk.CTkLabel(row, text=os.path.basename(path), width=220,
-                         anchor="w").pack(side="left", padx=4)
+            # Read-only, horizontally scrollable name field (long names readable).
+            name_entry = ctk.CTkEntry(self.perfile_frame)
+            name_entry.insert(0, os.path.basename(path))
+            name_entry.grid(row=i, column=0, sticky="ew", padx=4, pady=1)
+            try:
+                name_entry.configure(state="readonly")
+            except Exception:
+                pass
             var = tk.StringVar(value=per_file.get(path, ""))
-            ctk.CTkEntry(row, textvariable=var, width=160,
-                         placeholder_text="password…").pack(
-                side="left", padx=4)
+            ctk.CTkEntry(self.perfile_frame, textvariable=var, width=150,
+                         placeholder_text="password…").grid(
+                row=i, column=1, sticky="w", padx=4, pady=1)
             self._perfile_vars[path] = var
 
     def detect_passwords(self):
@@ -1092,6 +1250,365 @@ class App(ctk.CTk):
                           "(no working password)")
         self._log(f"Detect passwords: {n} file(s) unlocked.")
         self._render_files()
+
+    # ============================ Models tab =========================== #
+    def _build_models_tab(self, tab):
+        tab.grid_rowconfigure(0, weight=1)
+        tab.grid_columnconfigure(0, weight=1)
+        self._cat_holders = {}
+        self._hw = None
+        sub = ctk.CTkTabview(tab)
+        sub.grid(row=0, column=0, sticky="nsew")
+        for n in ("Overview", "Password", "Image", "Import (HF)"):
+            sub.add(n)
+        self._build_models_overview(sub.tab("Overview"))
+        self._build_category_subtab(sub.tab("Password"), "password")
+        self._build_category_subtab(sub.tab("Image"), "image")
+        self._build_models_import(sub.tab("Import (HF)"))
+
+    def _build_models_overview(self, tab):
+        body = ctk.CTkScrollableFrame(tab, label_text="")
+        body.pack(fill="both", expand=True)
+
+        fold = ctk.CTkFrame(body)
+        fold.pack(fill="x", padx=8, pady=6)
+        ctk.CTkLabel(fold, text="Models folder",
+                     font=ctk.CTkFont(weight="bold"), anchor="w").pack(
+            fill="x", padx=10, pady=(8, 2))
+        row = ctk.CTkFrame(fold, fg_color="transparent")
+        row.pack(fill="x", padx=12, pady=2)
+        row.grid_columnconfigure(0, weight=1)
+        self.models_root_var.set(appconfig.models_root())
+        ctk.CTkEntry(row, textvariable=self.models_root_var).grid(
+            row=0, column=0, sticky="ew")
+        ctk.CTkButton(row, text="Browse…", width=80,
+                      command=lambda: self._choose_folder(self.models_root_var)
+                      ).grid(row=0, column=1, padx=4)
+        ctk.CTkButton(row, text="Save", width=60,
+                      command=self._save_models_root).grid(row=0, column=2,
+                                                           padx=2)
+        ctk.CTkButton(row, text="Open", width=60,
+                      command=self._open_models_folder).grid(row=0, column=3,
+                                                             padx=2)
+        ctk.CTkLabel(fold, text="Each downloaded model gets its own subfolder "
+                                "with a model.json config. Shared across "
+                                "projects.", text_color="gray",
+                     font=ctk.CTkFont(size=11), anchor="w").pack(
+            fill="x", padx=10, pady=(0, 8))
+
+        env = ctk.CTkFrame(body)
+        env.pack(fill="x", padx=8, pady=6)
+        hrow = ctk.CTkFrame(env, fg_color="transparent")
+        hrow.pack(fill="x", padx=10, pady=(8, 0))
+        ctk.CTkLabel(hrow, text="Environment & hardware",
+                     font=ctk.CTkFont(weight="bold")).pack(side="left")
+        ctk.CTkButton(hrow, text="Refresh", width=70,
+                      command=self._refresh_models_env).pack(side="right")
+        self.models_env_label = ctk.CTkLabel(env, text="…", justify="left",
+                                             anchor="w", wraplength=820)
+        self.models_env_label.pack(fill="x", padx=10, pady=(2, 8))
+
+        cats = ctk.CTkFrame(body)
+        cats.pack(fill="x", padx=8, pady=6)
+        ctk.CTkLabel(cats, text="Model categories",
+                     font=ctk.CTkFont(weight="bold"), anchor="w").pack(
+            fill="x", padx=10, pady=(8, 2))
+        for cat, meta in models.CATEGORIES.items():
+            c = ctk.CTkFrame(cats, fg_color=("gray92", "gray16"))
+            c.pack(fill="x", padx=10, pady=4)
+            ctk.CTkLabel(c, text=meta["name"], font=ctk.CTkFont(weight="bold"),
+                         anchor="w").pack(fill="x", padx=8, pady=(6, 0))
+            ctk.CTkLabel(c, text=meta["summary"], anchor="w", justify="left",
+                         wraplength=820, text_color="gray").pack(
+                fill="x", padx=8)
+            ctk.CTkLabel(c, text="I/O: " + meta["io"], anchor="w",
+                         justify="left", wraplength=820,
+                         font=ctk.CTkFont(size=11)).pack(fill="x", padx=8)
+            ctk.CTkLabel(c, text="Category configuration: fixed (not "
+                                 "user-changeable).", anchor="w",
+                         font=ctk.CTkFont(size=11, slant="italic"),
+                         text_color="gray").pack(fill="x", padx=8, pady=(0, 6))
+        self._refresh_models_env()
+
+    def _refresh_models_env(self):
+        self._hw = models.hardware_info()
+        hub = models.huggingface_hub_available()
+        trans = models._transformers_available()
+        gpu = self._hw["gpu_name"] or ("yes" if self._hw["gpu"] else "none")
+        text = (
+            f"CPU: {self._hw['cpu_count']} cores · RAM: "
+            f"{self._hw['ram_gb']} GB · GPU: {gpu}\n"
+            f"huggingface_hub: " + ("installed"
+                                    if hub else "NOT installed — run  pip "
+                                    "install huggingface_hub  to enable "
+                                    "downloads/imports") + "\n"
+            f"transformers + torch: " + ("installed"
+                                         if trans else "NOT installed — run  "
+                                         "pip install transformers torch  to "
+                                         "run image models"))
+        self.models_env_label.configure(text=text)
+
+    def _save_models_root(self):
+        appconfig.set_models_root(self.models_root_var.get().strip())
+        self._log(f"Models folder set to: {appconfig.models_root()}")
+        for cat in models.CATEGORIES:
+            if cat in self._cat_holders:
+                self._render_category_models(cat)
+
+    def _open_models_folder(self):
+        path = appconfig.models_root()
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(path)  # noqa: S606
+            else:
+                import subprocess
+                subprocess.Popen(["open" if sys.platform == "darwin"
+                                  else "xdg-open", path])
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showinfo(about_info.APP_NAME, f"Folder: {path}\n{exc}")
+
+    def _build_category_subtab(self, tab, category):
+        body = ctk.CTkScrollableFrame(tab, label_text="")
+        body.pack(fill="both", expand=True)
+        meta = models.category_meta(category)
+        ctk.CTkLabel(body, text=meta.get("name", category),
+                     font=ctk.CTkFont(size=15, weight="bold"), anchor="w").pack(
+            fill="x", padx=10, pady=(8, 0))
+        ctk.CTkLabel(body, text=meta.get("summary", ""), anchor="w",
+                     justify="left", wraplength=820, text_color="gray").pack(
+            fill="x", padx=10, pady=(0, 6))
+
+        holder = ctk.CTkFrame(body, fg_color="transparent")
+        holder.pack(fill="x", padx=6)
+        self._cat_holders[category] = holder
+
+        # Add-your-own-model section (item 6.4).
+        add = ctk.CTkFrame(body)
+        add.pack(fill="x", padx=8, pady=(10, 6))
+        ctk.CTkLabel(add, text="Add your own model",
+                     font=ctk.CTkFont(weight="bold"), anchor="w").pack(
+            fill="x", padx=10, pady=(8, 2))
+        ctk.CTkLabel(add, text=self._user_model_guide(category), anchor="w",
+                     justify="left", wraplength=820,
+                     font=ctk.CTkFont(size=11)).pack(fill="x", padx=10)
+        name_var, source_var = tk.StringVar(), tk.StringVar()
+        self._cat_user_inputs[category] = (name_var, source_var)
+        frow = ctk.CTkFrame(add, fg_color="transparent")
+        frow.pack(fill="x", padx=12, pady=(4, 8))
+        ctk.CTkLabel(frow, text="Name:").pack(side="left", padx=(0, 4))
+        ctk.CTkEntry(frow, textvariable=name_var, width=120,
+                     placeholder_text="my model").pack(side="left", padx=2)
+        ctk.CTkLabel(frow, text="Source:").pack(side="left", padx=(8, 4))
+        ctk.CTkEntry(frow, textvariable=source_var, width=240,
+                     placeholder_text=(".py file" if category == "password"
+                                       else "HF id or local folder")).pack(
+            side="left", padx=2)
+        ctk.CTkButton(frow, text="…", width=28,
+                      command=lambda c=category: self._browse_user_model(c)
+                      ).pack(side="left")
+        ctk.CTkButton(frow, text="Add", width=60,
+                      command=lambda c=category: self._add_user_model(c)).pack(
+            side="left", padx=6)
+        self._render_category_models(category)
+
+    def _user_model_guide(self, category):
+        if category == "password":
+            return ("Write a Python file exposing  generate(hints) -> "
+                    "list[str].  hints = {samples, min_len, max_len, count}. "
+                    "Browse to the .py, give it a name, Add, then Test.")
+        return ("Use a local Hugging Face image-to-text model folder, or a HF "
+                "repo id (e.g. nlpconnect/vit-gpt2-image-captioning). Enter it, "
+                "name it, Add, then Test. Needs transformers + torch to run.")
+
+    def _browse_user_model(self, category):
+        _name, source_var = self._cat_user_inputs[category]
+        if category == "password":
+            path = filedialog.askopenfilename(
+                title="Select generator (.py)",
+                filetypes=[("Python", "*.py"), ("All files", "*.*")])
+        else:
+            path = filedialog.askdirectory(title="Select model folder")
+        if path:
+            source_var.set(path)
+
+    def _add_user_model(self, category):
+        name_var, source_var = self._cat_user_inputs[category]
+        source = source_var.get().strip()
+        if not source:
+            messagebox.showinfo(about_info.APP_NAME, "Enter a model source.")
+            return
+        entry = models.register_user_model(category, name_var.get().strip(),
+                                           source)
+        self._log(f"Added {category} model: {entry['name']} ({entry['id']})")
+        name_var.set(""); source_var.set("")
+        self._render_category_models(category)
+
+    def _render_category_models(self, category):
+        holder = self._cat_holders.get(category)
+        if holder is None:
+            return
+        for child in holder.winfo_children():
+            child.destroy()
+        hw = self._hw or models.hardware_info()
+
+        def model_row(mid, name, source, status, reasons, is_user):
+            r = ctk.CTkFrame(holder)
+            r.pack(fill="x", pady=2)
+            top = ctk.CTkFrame(r, fg_color="transparent")
+            top.pack(fill="x", padx=8, pady=(6, 0))
+            badge = {"built-in": "✓ built-in", "installed": "✓ installed",
+                     "needs-deps": "needs deps", "available": "downloadable",
+                     "user": "your model"}.get(status, status)
+            ctk.CTkLabel(top, text=f"{name}", anchor="w",
+                         font=ctk.CTkFont(weight="bold")).pack(side="left")
+            ctk.CTkLabel(top, text=f"  [{badge}]  {source}",
+                         text_color="gray", font=ctk.CTkFont(size=11)).pack(
+                side="left")
+            btns = ctk.CTkFrame(r, fg_color="transparent")
+            btns.pack(fill="x", padx=8, pady=(0, 6))
+            if status in ("available", "needs-deps"):
+                ctk.CTkButton(btns, text="Download", width=90,
+                              command=lambda: self._download_model(mid, category)
+                              ).pack(side="left", padx=2)
+            ctk.CTkButton(btns, text="Test", width=70,
+                          command=lambda: self._test_model(mid, category,
+                                                           is_user)).pack(
+                side="left", padx=2)
+            if is_user:
+                ctk.CTkButton(btns, text="Remove", width=70, fg_color="gray30",
+                              hover_color="#b91c1c",
+                              command=lambda: self._remove_user_model(
+                                  mid, category)).pack(side="left", padx=2)
+            if reasons:
+                ctk.CTkLabel(btns, text="⚠ " + "; ".join(reasons),
+                             text_color="#f59e0b",
+                             font=ctk.CTkFont(size=11)).pack(side="left",
+                                                             padx=8)
+
+        for mid, meta in models.list_models(category):
+            status = models.install_status(mid)
+            _ok, reasons = models.applicable(mid, hw)
+            sz = meta.get("size_mb")
+            src = (meta.get("source", "") + (f" · ~{sz} MB" if sz else "")).strip()
+            model_row(mid, meta.get("name", mid), src, status, reasons, False)
+        for um in models.list_user_models(category):
+            model_row(um["id"], um.get("name", um["id"]),
+                      str(um.get("path", "")), "user", [], True)
+
+    def _download_model(self, mid, category):
+        ok, reasons = models.applicable(mid, self._hw or models.hardware_info())
+        if not ok and not messagebox.askyesno(
+                about_info.APP_NAME,
+                "This model may not run well on your PC:\n  - "
+                + "\n  - ".join(reasons)
+                + "\n\nDownload anyway?"):
+            return
+        if not models.huggingface_hub_available():
+            messagebox.showinfo(
+                about_info.APP_NAME,
+                "Downloads need the 'huggingface_hub' package.\n\n"
+                "Install it with:  pip install huggingface_hub")
+            return
+        self._log(f"Downloading {mid}…")
+
+        def work():
+            try:
+                models.download_model(
+                    mid, progress=lambda m: self.msg_queue.put(("log", m)))
+            except Exception as exc:  # noqa: BLE001
+                self.msg_queue.put(("log", f"Download failed: {exc}"))
+            self.msg_queue.put(("models_refresh", category))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _test_model(self, mid, category, is_user):
+        source = None
+        if is_user:
+            for um in models.list_user_models(category):
+                if um["id"] == mid:
+                    source = um.get("path")
+                    break
+        self._log(f"Testing {mid}…")
+
+        def work():
+            ok, msg = models.self_test(mid, category, source=source)
+            self.msg_queue.put(("log", f"  Test {mid}: "
+                                f"{'OK' if ok else 'FAILED'} — {msg}"))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _remove_user_model(self, mid, category):
+        models.remove_user_model(mid)
+        self._log(f"Removed model {mid}")
+        self._render_category_models(category)
+
+    def _build_models_import(self, tab):
+        body = ctk.CTkScrollableFrame(tab, label_text="")
+        body.pack(fill="both", expand=True)
+        ctk.CTkLabel(body, text="Import a model from Hugging Face",
+                     font=ctk.CTkFont(size=15, weight="bold"), anchor="w").pack(
+            fill="x", padx=10, pady=(8, 2))
+        ctk.CTkLabel(body, text="Enter any Hugging Face repo id; it downloads "
+                                "into your models folder and is registered for "
+                                "the chosen category. Browse models at the "
+                                "sources below.", anchor="w", justify="left",
+                     wraplength=820, text_color="gray").pack(fill="x", padx=10)
+        srow = ctk.CTkFrame(body, fg_color="transparent")
+        srow.pack(fill="x", padx=10, pady=(4, 4))
+        for label, url in models.MODEL_SOURCES:
+            ctk.CTkButton(srow, text=f"Open: {label}", width=200,
+                          command=lambda u=url: self._open_url(u)).pack(
+                side="left", padx=4)
+
+        form = ctk.CTkFrame(body)
+        form.pack(fill="x", padx=8, pady=8)
+        r1 = ctk.CTkFrame(form, fg_color="transparent")
+        r1.pack(fill="x", padx=10, pady=(8, 2))
+        ctk.CTkLabel(r1, text="Repo id:").pack(side="left", padx=(0, 4))
+        ctk.CTkEntry(r1, textvariable=self.import_repo, width=300,
+                     placeholder_text="e.g. nlpconnect/vit-gpt2-image-captioning"
+                     ).pack(side="left", padx=2)
+        ctk.CTkLabel(r1, text="Category:").pack(side="left", padx=(10, 4))
+        ctk.CTkOptionMenu(r1, variable=self.import_category, width=120,
+                          values=list(models.CATEGORIES)).pack(side="left")
+        ctk.CTkButton(r1, text="Download & import", width=150,
+                      command=self._import_hf).pack(side="left", padx=8)
+        ctk.CTkLabel(form, text="⚠ Large downloads; image models need "
+                                "transformers + torch to run. Validation lets "
+                                "you force-use a model that fails its test.",
+                     text_color="#f59e0b", font=ctk.CTkFont(size=11),
+                     anchor="w", justify="left", wraplength=820).pack(
+            fill="x", padx=10, pady=(0, 8))
+
+    def _open_url(self, url):
+        import webbrowser
+        try:
+            webbrowser.open(url)
+        except Exception:
+            messagebox.showinfo(about_info.APP_NAME, url)
+
+    def _import_hf(self):
+        repo = self.import_repo.get().strip()
+        cat = self.import_category.get()
+        if not repo:
+            messagebox.showinfo(about_info.APP_NAME, "Enter a HF repo id.")
+            return
+        if not models.huggingface_hub_available():
+            messagebox.showinfo(
+                about_info.APP_NAME,
+                "Importing needs the 'huggingface_hub' package.\n\n"
+                "Install it with:  pip install huggingface_hub")
+            return
+        self._log(f"Importing {repo} ({cat})…")
+
+        def work():
+            try:
+                entry = models.import_hf_model(
+                    repo, cat,
+                    progress=lambda m: self.msg_queue.put(("log", m)))
+                self.msg_queue.put(("log", f"Imported as {entry['id']}."))
+            except Exception as exc:  # noqa: BLE001
+                self.msg_queue.put(("log", f"Import failed: {exc}"))
+            self.msg_queue.put(("models_refresh", cat))
+        threading.Thread(target=work, daemon=True).start()
 
     # ========================== Inspector tab ========================== #
     def _build_inspector_tab(self, tab):
@@ -1201,6 +1718,19 @@ class App(ctk.CTk):
             line("Restrictions", "none" if not denied
                  else ", ".join(sorted(denied)) + " (not allowed)")
 
+        # Document properties (item 3.3).
+        meta = scan.get("metadata") or {}
+        shown_meta = [(k, meta.get(k)) for k in
+                      ("title", "author", "subject", "keywords", "creator",
+                       "producer", "creationDate", "modDate", "format")
+                      if meta.get(k)]
+        if shown_meta:
+            ctk.CTkLabel(self.insp_body, text="Properties",
+                         font=ctk.CTkFont(size=14, weight="bold"),
+                         anchor="w").pack(fill="x", padx=8, pady=(12, 2))
+            for k, v in shown_meta:
+                line(k.capitalize(), v)
+
         # Planned modifications (item 9 — validate/preview overview).
         self._gather_ui_to_project()
         jobs = runner.jobs_for(self.project)
@@ -1291,6 +1821,19 @@ class App(ctk.CTk):
         self.keep_pages.set(mp.get("keep_pages", "all") or "all")
         self._set_text_reps(mp.get("search_replace_text", []) or [])
         self._set_img_reps(mp.get("search_replace_image", []) or [])
+        sec = mp.get("security", {}) or {}
+        self.sec_pw_mode.set(sec.get("set_user_password", "none"))
+        self.sec_user_pw.set(sec.get("user_password", ""))
+        self.sec_restrict.set(sec.get("restrict", False))
+        self.sec_owner_pw.set(sec.get("owner_password", ""))
+        sp = sec.get("permissions", {}) or {}
+        for name, var in self.sec_perms.items():
+            var.set(sp.get(name, True))
+        meta = mp.get("metadata", {}) or {}
+        self.meta_title.set(meta.get("title", ""))
+        self.meta_author.set(meta.get("author", ""))
+        self.meta_subject.set(meta.get("subject", ""))
+        self.meta_keywords.set(meta.get("keywords", ""))
         self._apply_cracking(p.get("passwords", {}).get("cracking", {}))
         dc = p.get("decompile", {})
         self.dec_enabled.set(dc.get("enabled", False))
@@ -1332,6 +1875,18 @@ class App(ctk.CTk):
         mpf["keep_pages"] = self.keep_pages.get().strip() or "all"
         mpf["search_replace_text"] = self._gather_text_reps()
         mpf["search_replace_image"] = self._gather_img_reps()
+        mpf["security"] = {
+            "set_user_password": self.sec_pw_mode.get(),
+            "user_password": self.sec_user_pw.get(),
+            "restrict": bool(self.sec_restrict.get()),
+            "owner_password": self.sec_owner_pw.get(),
+            "permissions": {n: bool(v.get())
+                            for n, v in self.sec_perms.items()},
+        }
+        mpf["metadata"] = {"title": self.meta_title.get().strip(),
+                           "author": self.meta_author.get().strip(),
+                           "subject": self.meta_subject.get().strip(),
+                           "keywords": self.meta_keywords.get().strip()}
         self._gather_cracking()
         fmts = []
         if self.fmt_latex.get():
@@ -1621,6 +2176,8 @@ class App(ctk.CTk):
                     self._on_run_done(payload)
                 elif kind == "crack_done":
                     self._on_crack_done()
+                elif kind == "models_refresh":
+                    self._render_category_models(payload)
                 elif kind == "ipreview_start":
                     self._clear_insp_body()
                     if payload > self.PREVIEW_PAGE_CAP:

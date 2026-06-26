@@ -27,10 +27,104 @@ from __future__ import annotations
 import io
 import os
 import re
+import secrets
+import string
 
 import fitz  # PyMuPDF
 
 from .pdf_remove import _apply_redactions
+
+# Permission name -> PyMuPDF bit (allowed when the bit is set).
+PERM_BITS = {
+    "print": getattr(fitz, "PDF_PERM_PRINT", 4),
+    "modify": getattr(fitz, "PDF_PERM_MODIFY", 8),
+    "copy": getattr(fitz, "PDF_PERM_COPY", 16),
+    "annotate": getattr(fitz, "PDF_PERM_ANNOTATE", 32),
+    "fill_forms": getattr(fitz, "PDF_PERM_FORM", 256),
+    "accessibility": getattr(fitz, "PDF_PERM_ACCESSIBILITY", 512),
+    "assemble": getattr(fitz, "PDF_PERM_ASSEMBLE", 1024),
+    "print_hq": getattr(fitz, "PDF_PERM_PRINT_HQ", 2048),
+}
+_ALL_PERMS = sum(PERM_BITS.values())
+
+
+def generate_password(length: int = 12) -> str:
+    """A reasonably strong random password."""
+    alphabet = string.ascii_letters + string.digits + "!@#$%*-_+="
+    return "".join(secrets.choice(alphabet) for _ in range(max(4, length)))
+
+
+def _permissions_int(allowed: dict) -> int:
+    """Build a permission bitmask; a flag allowed unless explicitly False."""
+    val = 0
+    for name, bit in PERM_BITS.items():
+        if allowed.get(name, True):
+            val |= bit
+    return val
+
+
+def _resolve_security(security):
+    """Resolve a security config into PyMuPDF save kwargs + an info dict.
+
+    Returns ``(save_kwargs, info)`` where ``save_kwargs`` is empty (no
+    encryption) or has ``encryption/user_pw/owner_pw/permissions``.
+    """
+    none = {"encryption": getattr(fitz, "PDF_ENCRYPT_NONE", 0)}
+    if not security:
+        return none, {}
+    mode = security.get("set_user_password", "none")
+    restrict = bool(security.get("restrict"))
+    length = int(security.get("random_length", 12))
+
+    user_pw = None
+    if mode == "fixed":
+        user_pw = security.get("user_password") or None
+    elif mode == "random":
+        user_pw = generate_password(length)
+
+    if not user_pw and not restrict:
+        return none, {}
+
+    owner_pw = security.get("owner_password") or None
+    perms = _ALL_PERMS
+    if restrict:
+        perms = _permissions_int(security.get("permissions", {}))
+        if not owner_pw:
+            owner_pw = generate_password(length)
+    if not owner_pw:
+        owner_pw = user_pw   # owner == user when only a user password is set
+
+    save_kwargs = {
+        "encryption": getattr(fitz, "PDF_ENCRYPT_AES_256", 0),
+        "user_pw": user_pw or "",
+        "owner_pw": owner_pw or "",
+        "permissions": perms,
+    }
+    info = {"user_password": user_pw, "owner_password": owner_pw,
+            "restricted": restrict, "permissions_int": perms}
+    return save_kwargs, info
+
+
+_META_KEYS = ("title", "author", "subject", "keywords", "creator", "producer")
+
+
+def _apply_metadata(doc, metadata):
+    """Set provided (non-empty) document properties. Returns the keys set."""
+    if not metadata:
+        return []
+    current = dict(doc.metadata or {})
+    changed = []
+    for k in _META_KEYS:
+        v = metadata.get(k)
+        if v:
+            current[k] = v
+            changed.append(k)
+    if changed:
+        try:
+            doc.set_metadata(current)
+        except Exception:
+            return []
+    return changed
 
 
 # --------------------------------------------------------------------------- #
@@ -237,7 +331,8 @@ def apply_modifications(input_path, output_path=None, *, password=None,
                         remove_restrictions=False, text_replacements=None,
                         image_replacements=None, image_analyzer=None,
                         stamp_analysis=True, process_pages="all",
-                        keep_pages="all", validate=False, log=None) -> dict:
+                        keep_pages="all", security=None, metadata=None,
+                        validate=False, log=None) -> dict:
     """Apply the requested modifications and (unless ``validate``) save the PDF.
 
     Returns a report dict. ``image_analyzer`` is an optional callable
@@ -255,6 +350,8 @@ def apply_modifications(input_path, output_path=None, *, password=None,
         "image_replacements": 0, "image_analyses": [],
         "restrictions_removed": bool(remove_restrictions),
         "pages_processed": [], "pages_kept": None, "error": None,
+        "set_password": None, "owner_password": None, "restricted": False,
+        "metadata_set": [],
     }
     try:
         if not _authenticate(doc, password):
@@ -286,13 +383,25 @@ def apply_modifications(input_path, output_path=None, *, password=None,
             doc.select(keep)
         report["pages_kept"] = doc.page_count
 
+        save_kwargs, sec_info = _resolve_security(security)
+        report["set_password"] = sec_info.get("user_password")
+        report["owner_password"] = sec_info.get("owner_password")
+        report["restricted"] = sec_info.get("restricted", False)
+
         if validate:
+            extra = ""
+            if sec_info:
+                extra = (" + set "
+                         + ("open password" if sec_info.get("user_password")
+                            else "owner password")
+                         + (" with restrictions" if sec_info.get("restricted")
+                            else ""))
             log("  VALIDATE: "
                 f"{report['images_removed']} image(s) would be removed, "
                 f"{report['text_replacements']} text + "
                 f"{report['image_replacements']} image replacement(s), "
                 f"{len(report['image_analyses'])} image(s) analysed, "
-                f"{report['pages_kept']} page(s) kept.")
+                f"{report['pages_kept']} page(s) kept{extra}.")
             return report
 
         if output_path is None:
@@ -300,9 +409,11 @@ def apply_modifications(input_path, output_path=None, *, password=None,
         out_parent = os.path.dirname(os.path.abspath(output_path))
         if out_parent:
             os.makedirs(out_parent, exist_ok=True)
-        # Always unencrypted output (drops password + owner restrictions).
+        report["metadata_set"] = _apply_metadata(doc, metadata)
+        # Default save is unencrypted (drops password + owner restrictions);
+        # if a security config is given, the new password/restrictions apply.
         doc.save(output_path, garbage=4, deflate=True, clean=True,
-                 encryption=getattr(fitz, "PDF_ENCRYPT_NONE", 0))
+                 **save_kwargs)
         report["output"] = output_path
         return report
     finally:
@@ -336,6 +447,8 @@ def is_page_subset(pages_spec) -> bool:
 
 def has_advanced_options(modify_cfg) -> bool:
     """True if the Modify config needs the extended pipeline (vs simple removal)."""
+    sec = modify_cfg.get("security") or {}
+    meta = modify_cfg.get("metadata") or {}
     return bool(
         modify_cfg.get("remove_restrictions_and_password")
         or modify_cfg.get("search_replace_text")
@@ -343,4 +456,7 @@ def has_advanced_options(modify_cfg) -> bool:
         or (modify_cfg.get("image_ai_analysis") or {}).get("enabled")
         or (modify_cfg.get("page_range", "all") not in ("all", "", None))
         or (modify_cfg.get("keep_pages", "all") not in ("all", "", None))
+        or sec.get("set_user_password", "none") != "none"
+        or sec.get("restrict")
+        or any(meta.get(k) for k in _META_KEYS)
     )

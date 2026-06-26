@@ -216,14 +216,14 @@ def run(project: dict, *, log=None, progress=None, stop=None,
         mid = ai.get("model") or "img-blip-base"
         user_model = (ai.get("user_model") or "").strip() or None
         try:
-            analyzer = models.make_image_captioner(mid, project, project_path,
-                                                   user_model=user_model)
+            analyzer = models.make_image_captioner(mid, user_model=user_model)
         except Exception:
             analyzer = None
 
     validate = mcfg.get("mode") == "validate"
     total = max(1, len(files) * max(1, len(jobs)))
     step = ok = fail = skip = 0
+    csv_rows = {}   # output_folder -> [(file, open_pw, owner_pw, restricted)]
 
     for fentry in files:
         if stop():
@@ -261,7 +261,7 @@ def run(project: dict, *, log=None, progress=None, stop=None,
                     break
                 try:
                     _run_one(job, project, path, work_path, stem, ext,
-                             validate, analyzer, log)
+                             validate, analyzer, log, csv_rows)
                     ok += 1
                 except Exception as exc:  # noqa: BLE001
                     fail += 1
@@ -275,12 +275,34 @@ def run(project: dict, *, log=None, progress=None, stop=None,
                 except OSError:
                     pass
 
+    _write_password_csvs(csv_rows, log)
     log(f"Done. {ok} succeeded, {fail} failed, {skip} skipped.")
     return {"ok": ok, "fail": fail, "skip": skip}
 
 
+def _write_password_csvs(csv_rows, log):
+    """One ``modified_passwords.csv`` per output folder (item 3.1)."""
+    import csv
+    for folder, rows in csv_rows.items():
+        if not rows:
+            continue
+        path = os.path.join(folder, "modified_passwords.csv")
+        try:
+            exists = os.path.exists(path)
+            with open(path, "a", newline="", encoding="utf-8") as fh:
+                w = csv.writer(fh)
+                if not exists:
+                    w.writerow(["file", "open_password", "owner_password",
+                                "restricted"])
+                w.writerows(rows)
+            log(f"  Wrote {os.path.basename(path)} ({len(rows)} entr"
+                f"{'y' if len(rows) == 1 else 'ies'}) in {folder}")
+        except Exception as exc:  # noqa: BLE001
+            log(f"  WARN could not write password CSV in {folder}: {exc}")
+
+
 def _run_one(job, project, src_path, work_path, stem, ext, validate, analyzer,
-             log):
+             log, csv_rows=None):
     name = os.path.basename(src_path)
 
     if job == "modify":
@@ -305,14 +327,28 @@ def _run_one(job, project, src_path, work_path, stem, ext, validate, analyzer,
                 image_analyzer=analyzer,
                 process_pages=mcfg.get("page_range", "all"),
                 keep_pages=mcfg.get("keep_pages", "all"),
+                security=mcfg.get("security"), metadata=mcfg.get("metadata"),
                 validate=validate, log=log)
             if rep.get("error"):
                 raise RuntimeError(rep["error"])
             if validate:
                 return
+            # Record any new password for the per-folder CSV.
+            if csv_rows is not None and (rep.get("set_password")
+                                         or rep.get("owner_password")):
+                csv_rows.setdefault(target, []).append(
+                    [os.path.basename(out_path), rep.get("set_password") or "",
+                     rep.get("owner_password") or "",
+                     "yes" if rep.get("restricted") else "no"])
+            sec = ""
+            if rep.get("set_password") or rep.get("owner_password"):
+                sec = " +password"
+                if rep.get("restricted"):
+                    sec += "/restrictions"
             log(f"  OK  {name} -> {os.path.basename(out_path)} "
                 f"(imgs:{rep['images_removed']} text:{rep['text_replacements']} "
-                f"imgreps:{rep['image_replacements']} pages:{rep['pages_kept']})")
+                f"imgreps:{rep['image_replacements']} pages:{rep['pages_kept']}"
+                f"{sec})")
             return
 
         # Simple, well-tested image-removal path.

@@ -10,7 +10,7 @@ update.
 
 APP_NAME = "PDF Ai Decompile"
 TAGLINE = "Projects \u00b7 Modify PDF \u00b7 Decompile to LaTeX / Markdown"
-VERSION = "4.1"
+VERSION = "4.3"
 
 # --------------------------------------------------------------------------- #
 #  Authors  (single source of truth)                                          #
@@ -73,6 +73,9 @@ FEATURES = [
     "(literal or regex), search & replace image (match by similarity, delete "
     "or replace), AI image analysis, page-range selection and pages-to-keep, "
     "plus a Validate mode that reports changes without writing.",
+    "Modify security & properties: set a new open password (fixed, or random "
+    "per file written to a CSV), apply restrictions (block copy/print/edit), "
+    "and set document properties (title/author/subject/keywords).",
     "Password recovery: brute force (charset/length/mask, threads, attempt or "
     "time limits, files in parallel) and dependency-free candidate models "
     "(Markov / rule mangler), with an encrypted reuse pool and your own model "
@@ -117,14 +120,32 @@ NOTES = [
     "tools are a local \"forgot my password\" helper. Brute force only "
     "succeeds against weak passwords; strong AES-256 passwords are infeasible "
     "to recover.",
-    "AI models are optional and downloaded on demand into the project folder. "
-    "Image analysis needs transformers/torch; without them a heuristic "
-    "description is used. The built-in password models need no download.",
+    "AI models are managed in the Models tab: download, test, add your own, or "
+    "import from Hugging Face, with hardware-aware recommendations. Downloads "
+    "need 'huggingface_hub'; image models need transformers/torch — without "
+    "them a heuristic description and the built-in password models are used.",
 ]
 
 # Revision history (newest first). Shown in the About dialog and documented in
 # Doc/SKILL.md.
 REVISION_HISTORY = [
+    ("4.3", "New Models tab to manage AI models in one place: an Overview "
+            "(shared models folder, environment/hardware, category rules), a "
+            "sub-tab per category (Password, Image) to download / test / add "
+            "your own model, and a Hugging Face import tab. Models are stored "
+            "in a shared folder (each in its own subfolder with model.json), "
+            "with hardware-aware recommendations and override warnings. "
+            "Downloads need the optional 'huggingface_hub' package; image "
+            "models need transformers + torch — the tab shows what's missing."),
+    ("4.2", "Modify PDF can now set a new open password (fixed or random "
+            "per file, written to modified_passwords.csv per output folder), "
+            "apply permission restrictions (block copy/print/edit…), and set "
+            "document properties (title/author/subject/keywords). The "
+            "Inspector shows full properties and restrictions. UI polish: "
+            "aligned Files columns with Protected & Restrictions columns; "
+            "per-file password list is two-column and shows only protected "
+            "files; compact search-&-replace editors; and the Modify PDF and "
+            "Decompile tabs use a space-efficient two-column layout."),
     ("4.1", "Completed the v4 feature set. Advanced Modify: remove "
             "restrictions & password, search & replace text (literal/regex) "
             "and image (similarity match), AI image analysis, page-range and "

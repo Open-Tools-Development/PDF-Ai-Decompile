@@ -83,6 +83,21 @@ def default_project(name: str = "Untitled Project") -> dict:
                                   "user_model": ""},
             "page_range": "all",          # "all" | "1-3,5" (process which pages)
             "keep_pages": "all",          # "all" | "1-3,5" (pages kept in output)
+            # Output security: set a new open password and/or restrictions.
+            "security": {
+                "set_user_password": "none",   # none | fixed | random
+                "user_password": "",
+                "restrict": False,             # apply owner-password restrictions
+                "owner_password": "",          # blank → auto-generated
+                # Allowed actions (unchecked == denied). Defaults: allow all.
+                "permissions": {"print": True, "copy": True, "modify": True,
+                                "annotate": True, "fill_forms": True,
+                                "accessibility": True, "assemble": True,
+                                "print_hq": True},
+            },
+            # Document properties to set on the output (blank = leave as-is).
+            "metadata": {"title": "", "author": "", "subject": "",
+                         "keywords": ""},
         },
 
         # Category 2 — Decompile to Text.
