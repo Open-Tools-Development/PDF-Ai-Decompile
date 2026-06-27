@@ -10,7 +10,7 @@ update.
 
 APP_NAME = "PDF Ai Decompile"
 TAGLINE = "Projects \u00b7 Modify PDF \u00b7 Decompile to LaTeX / Markdown"
-VERSION = "4.3"
+VERSION = "4.4"
 
 # --------------------------------------------------------------------------- #
 #  Authors  (single source of truth)                                          #
@@ -129,6 +129,17 @@ NOTES = [
 # Revision history (newest first). Shown in the About dialog and documented in
 # Doc/SKILL.md.
 REVISION_HISTORY = [
+    ("4.4", "Files tab is now a resizable, scrollable table (with a full-path "
+            "column, Protected & Restrictions). Modify PDF: a “Do nothing” "
+            "option, restriction controls grey out when not applied, owner "
+            "password can be fixed or random (saved to the CSV), restriction "
+            "labels read “Allow/Disable …”, and blank page ranges auto-fill "
+            "“all”. Models are now chosen from dropdowns of what is actually "
+            "available (AI options disable with guidance when none); a new "
+            "Setup tab detects and installs the optional dependencies "
+            "(huggingface_hub / transformers / torch) with one click; each "
+            "category’s details moved to its own tab; the Import tab lists "
+            "reusable local models."),
     ("4.3", "New Models tab to manage AI models in one place: an Overview "
             "(shared models folder, environment/hardware, category rules), a "
             "sub-tab per category (Password, Image) to download / test / add "

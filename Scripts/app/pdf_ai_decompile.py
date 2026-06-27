@@ -225,6 +225,7 @@ class App(ctk.CTk):
         self.sec_pw_mode = tk.StringVar(value="none")    # none|fixed|random
         self.sec_user_pw = tk.StringVar(value="")
         self.sec_restrict = tk.BooleanVar(value=False)
+        self.sec_owner_mode = tk.StringVar(value="random")   # random | fixed
         self.sec_owner_pw = tk.StringVar(value="")
         self.sec_perms = {name: tk.BooleanVar(value=True)
                           for name in ("print", "copy", "modify", "annotate",
@@ -441,6 +442,10 @@ class App(ctk.CTk):
         ctk.CTkButton(btnrow, text="Clear list", width=80, fg_color="gray30",
                       hover_color="gray25", command=self.clear_files).pack(
             side="right", padx=4)
+        ctk.CTkButton(btnrow, text="Remove highlighted", width=140,
+                      fg_color="gray30", hover_color="#b91c1c",
+                      command=self.remove_highlighted_files).pack(
+            side="right", padx=4)
 
         filt = ctk.CTkFrame(tab, fg_color="transparent")
         filt.grid(row=1, column=0, sticky="ew", pady=2)
@@ -456,26 +461,69 @@ class App(ctk.CTk):
                       hover_color="gray25",
                       command=self._reset_filter).pack(side="left", padx=2)
 
-        # Header + rows share one grid (in the scrollable frame) so columns
-        # stay aligned regardless of file-name length.
-        self.files_frame = ctk.CTkScrollableFrame(tab, label_text="")
-        self.files_frame.grid(row=2, column=0, sticky="nsew", pady=(4, 4))
+        ctk.CTkLabel(tab, text="Click the ✓ column to include/exclude a file. "
+                               "Drag column borders to resize; scroll right to "
+                               "read the full path.", text_color="gray",
+                     font=ctk.CTkFont(size=11), anchor="w").grid(
+            row=2, column=0, sticky="w", padx=6)
+
+        # Resizable, scrollable table (ttk.Treeview) so long names/paths are
+        # readable and columns can be resized (item 1).
+        from tkinter import ttk
+        wrap = tk.Frame(tab, bg="#1d2433", highlightthickness=0)
+        wrap.grid(row=3, column=0, sticky="nsew", pady=(2, 4))
+        wrap.grid_rowconfigure(0, weight=1)
+        wrap.grid_columnconfigure(0, weight=1)
+        self._init_tree_style(ttk)
+        cols = ("sel", "name", "size", "pages", "protected", "restrictions",
+                "path")
+        heads = {"sel": "✓", "name": "File name", "size": "Size",
+                 "pages": "Pages", "protected": "Protected",
+                 "restrictions": "Restrictions", "path": "Full path"}
+        widths = {"sel": 34, "name": 240, "size": 70, "pages": 56,
+                  "protected": 90, "restrictions": 150, "path": 420}
+        self.files_tree = ttk.Treeview(wrap, columns=cols, show="headings",
+                                       style="Files.Treeview",
+                                       selectmode="extended")
+        for c in cols:
+            self.files_tree.heading(c, text=heads[c])
+            self.files_tree.column(c, width=widths[c], anchor="w",
+                                   stretch=(c in ("name", "path")),
+                                   minwidth=34)
+        ysb = ttk.Scrollbar(wrap, orient="vertical",
+                            command=self.files_tree.yview)
+        xsb = ttk.Scrollbar(wrap, orient="horizontal",
+                            command=self.files_tree.xview)
+        self.files_tree.configure(yscrollcommand=ysb.set,
+                                  xscrollcommand=xsb.set)
+        self.files_tree.grid(row=0, column=0, sticky="nsew")
+        ysb.grid(row=0, column=1, sticky="ns")
+        xsb.grid(row=1, column=0, sticky="ew")
+        self.files_tree.bind("<Button-1>", self._on_files_click)
+        self._tree_items = {}
+
         self.files_count = ctk.CTkLabel(tab, text="Queued: 0  |  selected: 0",
                                         anchor="w")
-        self.files_count.grid(row=3, column=0, sticky="w", padx=4, pady=(0, 4))
+        self.files_count.grid(row=4, column=0, sticky="w", padx=4, pady=(0, 4))
 
-    # Column layout shared by the Files-tab header and every data row.
-    FILE_COLS = [("✓", 30, 0), ("File name", 300, 1), ("Size", 80, 0),
-                 ("Pages", 60, 0), ("Protected", 110, 0),
-                 ("Restrictions", 170, 0), ("", 34, 0)]
     _PERM_SHORT = {"print": "print", "copy": "copy", "modify": "edit",
                    "annotate": "annot", "fill_forms": "forms",
                    "accessibility": "a11y", "assemble": "assemble",
                    "print_hq": "hi-print"}
 
-    @staticmethod
-    def _ellipsize(text, limit=44):
-        return text if len(text) <= limit else "…" + text[-(limit - 1):]
+    def _init_tree_style(self, ttk):
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+        style.configure("Files.Treeview", background="#1d2433",
+                        foreground="#e2e8f0", fieldbackground="#1d2433",
+                        rowheight=26, borderwidth=0)
+        style.configure("Files.Treeview.Heading", background="#0f172a",
+                        foreground="#e2e8f0", relief="flat")
+        style.map("Files.Treeview", background=[("selected", "#38bdf8")],
+                  foreground=[("selected", "#0f172a")])
 
     def _reset_filter(self):
         self.filter_value.set("")
@@ -525,43 +573,32 @@ class App(ctk.CTk):
         return "no " + ", ".join(sorted(denied)) if denied else "—"
 
     def _render_files(self):
-        for child in self.files_frame.winfo_children():
-            child.destroy()
-        self._file_rows = []
-        for col, (_t, w, weight) in enumerate(self.FILE_COLS):
-            self.files_frame.grid_columnconfigure(col, minsize=w, weight=weight)
-        # Header row.
-        for col, (txt, _w, _wt) in enumerate(self.FILE_COLS):
-            ctk.CTkLabel(self.files_frame, text=txt, anchor="w",
-                         font=ctk.CTkFont(size=11, weight="bold")).grid(
-                row=0, column=col, sticky="w", padx=4, pady=(0, 4))
-
-        entries = self._filtered_files()
-        for i, e in enumerate(entries, start=1):
+        self.files_tree.delete(*self.files_tree.get_children())
+        self._tree_items = {}
+        for e in self._filtered_files():
             info = e.get("info", {})
-            var = tk.BooleanVar(value=e.get("selected", True))
-            ctk.CTkCheckBox(self.files_frame, text="", width=24, variable=var,
-                            command=lambda en=e, v=var: self._set_selected(en, v)
-                            ).grid(row=i, column=0, padx=4, pady=1)
-            ctk.CTkLabel(self.files_frame,
-                         text=self._ellipsize(os.path.basename(e["path"])),
-                         anchor="w").grid(row=i, column=1, sticky="w", padx=4)
-            ctk.CTkLabel(self.files_frame,
-                         text=pdf_info.human_size(info.get("size_bytes")),
-                         anchor="w").grid(row=i, column=2, sticky="w", padx=4)
             pc = info.get("page_count")
-            ctk.CTkLabel(self.files_frame, text=("?" if pc is None else str(pc)),
-                         anchor="w").grid(row=i, column=3, sticky="w", padx=4)
-            ctk.CTkLabel(self.files_frame, text=self._protected_text(info),
-                         anchor="w").grid(row=i, column=4, sticky="w", padx=4)
-            ctk.CTkLabel(self.files_frame, text=self._restrictions_text(info),
-                         anchor="w", font=ctk.CTkFont(size=11)).grid(
-                row=i, column=5, sticky="w", padx=4)
-            ctk.CTkButton(self.files_frame, text="✕", width=28,
-                          fg_color="gray30", hover_color="#b91c1c",
-                          command=lambda en=e: self._remove_file(en)).grid(
-                row=i, column=6, padx=4, pady=1)
-            self._file_rows.append((e, var))
+            vals = ("✓" if e.get("selected", True) else "✗",
+                    os.path.basename(e["path"]),
+                    pdf_info.human_size(info.get("size_bytes")),
+                    "?" if pc is None else str(pc),
+                    self._protected_text(info), self._restrictions_text(info),
+                    e["path"])
+            iid = self.files_tree.insert("", "end", values=vals)
+            self._tree_items[iid] = e
+        self._update_file_count()
+
+    def _on_files_click(self, event):
+        if self.files_tree.identify("region", event.x, event.y) != "cell":
+            return
+        if self.files_tree.identify_column(event.x) != "#1":
+            return
+        iid = self.files_tree.identify_row(event.y)
+        e = self._tree_items.get(iid)
+        if not e:
+            return
+        e["selected"] = not e.get("selected", True)
+        self.files_tree.set(iid, "sel", "✓" if e["selected"] else "✗")
         self._update_file_count()
 
     def _update_file_count(self):
@@ -569,9 +606,14 @@ class App(ctk.CTk):
         sel = sum(1 for e in self.project["files"] if e.get("selected", True))
         self.files_count.configure(text=f"Queued: {total}  |  selected: {sel}")
 
-    def _set_selected(self, entry, var):
-        entry["selected"] = bool(var.get())
-        self._update_file_count()
+    def remove_highlighted_files(self):
+        entries = [self._tree_items[i] for i in self.files_tree.selection()
+                   if i in self._tree_items]
+        if not entries:
+            return
+        keep = [e for e in self.project["files"] if e not in entries]
+        self.project["files"] = keep
+        self._after_files_changed()
 
     def _select_all_files(self, value):
         for e in self.project["files"]:
@@ -689,6 +731,10 @@ class App(ctk.CTk):
                      font=ctk.CTkFont(weight="bold"), anchor="w").pack(
             fill="x", padx=10, pady=(8, 2))
         ctk.CTkRadioButton(
+            f, text="Do nothing (use only the options below)",
+            variable=self.remove_mode, value="none").pack(
+            anchor="w", padx=16, pady=2)
+        ctk.CTkRadioButton(
             f, text="Remove images only (keep charts, tables, layout)",
             variable=self.remove_mode, value="images").pack(
             anchor="w", padx=16, pady=2)
@@ -703,6 +749,11 @@ class App(ctk.CTk):
         return f
 
     # ---- Modify: output security (set password / restrictions) ----
+    _PERM_LABELS = {"print": "print", "copy": "copy", "modify": "edit",
+                    "annotate": "annotate", "fill_forms": "form filling",
+                    "accessibility": "accessibility", "assemble": "assembly",
+                    "print_hq": "hi-res print"}
+
     def _build_security_panel(self, parent):
         f = ctk.CTkFrame(parent)
         ctk.CTkLabel(f, text="Output security",
@@ -712,36 +763,72 @@ class App(ctk.CTk):
         r1.pack(fill="x", padx=14, pady=2)
         ctk.CTkLabel(r1, text="Set open password:").pack(side="left",
                                                          padx=(0, 6))
-        ctk.CTkOptionMenu(r1, variable=self.sec_pw_mode, width=120,
+        ctk.CTkOptionMenu(r1, variable=self.sec_pw_mode, width=110,
                           values=["none", "fixed", "random"]).pack(side="left")
         ctk.CTkEntry(r1, textvariable=self.sec_user_pw, width=130,
                      placeholder_text="fixed password").pack(side="left",
                                                               padx=6)
+
         ctk.CTkCheckBox(f, text="Apply restrictions (owner password)",
-                        variable=self.sec_restrict).pack(
-            anchor="w", padx=14, pady=(4, 2))
+                        variable=self.sec_restrict,
+                        command=self._update_restrict_state).pack(
+            anchor="w", padx=14, pady=(6, 2))
+
+        self._restrict_widgets = []
+        ow = ctk.CTkFrame(f, fg_color="transparent")
+        ow.pack(fill="x", padx=20, pady=2)
+        ctk.CTkLabel(ow, text="Owner password:").pack(side="left", padx=(0, 6))
+        om = ctk.CTkOptionMenu(ow, variable=self.sec_owner_mode, width=100,
+                               values=["random", "fixed"],
+                               command=lambda _v: self._update_restrict_state())
+        om.pack(side="left")
+        oe = ctk.CTkEntry(ow, textvariable=self.sec_owner_pw, width=130,
+                          placeholder_text="fixed owner password")
+        oe.pack(side="left", padx=6)
+        self._restrict_widgets += [om, oe]
+
         perms = ctk.CTkFrame(f, fg_color="transparent")
         perms.pack(fill="x", padx=20, pady=2)
-        labels = {"print": "print", "copy": "copy", "modify": "edit",
-                  "annotate": "annotate", "fill_forms": "forms",
-                  "accessibility": "accessibility", "assemble": "assemble",
-                  "print_hq": "hi-res print"}
-        for i, (name, lbl) in enumerate(labels.items()):
-            ctk.CTkCheckBox(perms, text=f"allow {lbl}", width=130,
-                            variable=self.sec_perms[name],
-                            font=ctk.CTkFont(size=11)).grid(
-                row=i // 2, column=i % 2, sticky="w", padx=4, pady=1)
-        r3 = ctk.CTkFrame(f, fg_color="transparent")
-        r3.pack(fill="x", padx=14, pady=(2, 2))
-        ctk.CTkLabel(r3, text="Owner password:").pack(side="left", padx=(0, 6))
-        ctk.CTkEntry(r3, textvariable=self.sec_owner_pw, width=130,
-                     placeholder_text="blank = random").pack(side="left")
-        ctk.CTkLabel(f, text="“random” open passwords are written to "
-                             "modified_passwords.csv in each output folder.",
-                     text_color="gray", font=ctk.CTkFont(size=11),
-                     wraplength=300, justify="left", anchor="w").pack(
-            fill="x", padx=10, pady=(2, 8))
+        self._perm_checks = {}
+        for i, (name, lbl) in enumerate(self._PERM_LABELS.items()):
+            cb = ctk.CTkCheckBox(
+                perms, width=150, variable=self.sec_perms[name],
+                text=self._perm_text(name),
+                command=lambda n=name: self._update_perm_text(n),
+                font=ctk.CTkFont(size=11))
+            cb.grid(row=i // 2, column=i % 2, sticky="w", padx=4, pady=1)
+            self._perm_checks[name] = cb
+            self._restrict_widgets.append(cb)
+
+        ctk.CTkLabel(
+            f, text="Restrictions apply to every file selected in the Files "
+                    "tab. Random open/owner passwords are written to "
+                    "modified_passwords.csv in each output folder.",
+            text_color="gray", font=ctk.CTkFont(size=11), wraplength=300,
+            justify="left", anchor="w").pack(fill="x", padx=10, pady=(4, 8))
+        self._update_restrict_state()
         return f
+
+    def _perm_text(self, name):
+        lbl = self._PERM_LABELS[name]
+        return (f"Allow {lbl}" if self.sec_perms[name].get()
+                else f"Disable {lbl}")
+
+    def _update_perm_text(self, name):
+        if hasattr(self, "_perm_checks") and name in self._perm_checks:
+            self._perm_checks[name].configure(text=self._perm_text(name))
+
+    def _update_restrict_state(self):
+        on = bool(self.sec_restrict.get())
+        state = "normal" if on else "disabled"
+        for w in getattr(self, "_restrict_widgets", []):
+            try:
+                w.configure(state=state)
+            except Exception:
+                pass
+        # When fixed owner mode is off, the owner entry stays disabled too.
+        for name in getattr(self, "_perm_checks", {}):
+            self._update_perm_text(name)
 
     # ---- Modify: document properties (metadata) ----
     def _build_metadata_panel(self, parent):
@@ -857,39 +944,51 @@ class App(ctk.CTk):
         if path:
             var.set(path)
 
-    # ---- Modify: AI image analysis ----
+    # ---- Modify: AI image analysis (models come from the Models tab) ----
     def _build_ai_analysis_panel(self, parent):
         f = ctk.CTkFrame(parent)
-        ctk.CTkCheckBox(
-            f, text="Analyse images with an AI model (caption each image in "
-                    "place)", variable=self.ai_analysis_enabled,
-            font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10,
-                                                  pady=(8, 2))
+        self.ai_enable_chk = ctk.CTkCheckBox(
+            f, text="Analyse images with an AI model (caption each in place)",
+            variable=self.ai_analysis_enabled,
+            font=ctk.CTkFont(weight="bold"))
+        self.ai_enable_chk.pack(anchor="w", padx=10, pady=(8, 2))
         row = ctk.CTkFrame(f, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=(0, 4))
         ctk.CTkLabel(row, text="Model:").pack(side="left", padx=(0, 6))
-        img_models = [mid for mid, _ in models.list_models("image")] or \
-            ["img-blip-base"]
-        ctk.CTkOptionMenu(row, variable=self.ai_model, width=200,
-                          values=img_models).pack(side="left")
-        ctk.CTkButton(row, text="Download", width=90,
-                      command=self._download_selected_image_model).pack(
-            side="left", padx=8)
-        urow = ctk.CTkFrame(f, fg_color="transparent")
-        urow.pack(fill="x", padx=14, pady=(0, 4))
-        ctk.CTkLabel(urow, text="Your own model (HF id or local folder):").pack(
-            side="left", padx=(0, 6))
-        ctk.CTkEntry(urow, textvariable=self.ai_user_model, width=240,
-                     placeholder_text="(optional)").pack(side="left")
-        ctk.CTkButton(urow, text="…", width=28,
-                      command=lambda: self._choose_folder(self.ai_user_model)
-                      ).pack(side="left", padx=4)
-        ctk.CTkLabel(f, text="Downloaded on demand. Without the model "
-                             "(transformers/torch), a heuristic description is "
-                             "used.", text_color="gray",
-                     font=ctk.CTkFont(size=11), anchor="w").pack(
-            fill="x", padx=10, pady=(0, 8))
+        self.ai_model_menu = ctk.CTkOptionMenu(row, variable=self.ai_model,
+                                               width=240, values=["(none)"])
+        self.ai_model_menu.pack(side="left")
+        self.ai_status_label = ctk.CTkLabel(
+            f, text="", text_color="#f59e0b", font=ctk.CTkFont(size=11),
+            wraplength=300, justify="left", anchor="w")
+        self.ai_status_label.pack(fill="x", padx=10, pady=(0, 8))
+        self._refresh_ai_models()
         return f
+
+    def _refresh_ai_models(self):
+        if not hasattr(self, "ai_model_menu"):
+            return
+        avail = models.available_models("image")
+        self._ai_model_map = {name: mid for mid, name, _k in avail}
+        if avail:
+            names = list(self._ai_model_map)
+            self.ai_model_menu.configure(values=names, state="normal")
+            cur = self.ai_model.get()
+            if cur not in names:
+                # keep a saved id selected if it maps to a name
+                inv = {mid: name for name, mid in self._ai_model_map.items()}
+                self.ai_model.set(inv.get(cur, names[0]))
+            self.ai_enable_chk.configure(state="normal")
+            self.ai_status_label.configure(text="")
+        else:
+            self.ai_model_menu.configure(values=["(none)"], state="disabled")
+            self.ai_model.set("(none)")
+            self.ai_analysis_enabled.set(False)
+            self.ai_enable_chk.configure(state="disabled")
+            self.ai_status_label.configure(
+                text="AI disabled — no image model available. Open the Models "
+                     "tab → Image to download or add one (needs "
+                     "transformers + torch).")
 
     # ---- Modify: page ranges ----
     def _build_pages_panel(self, parent):
@@ -900,19 +999,30 @@ class App(ctk.CTk):
         r1.pack(fill="x", padx=14, pady=2)
         ctk.CTkLabel(r1, text="Apply changes to pages:", width=170,
                      anchor="w").pack(side="left")
-        ctk.CTkEntry(r1, textvariable=self.process_pages, width=160).pack(
-            side="left")
+        self._pages_entry(r1, self.process_pages).pack(side="left")
         ctk.CTkLabel(r1, text="e.g. all or 1-3,5", text_color="gray").pack(
             side="left", padx=8)
         r2 = ctk.CTkFrame(f, fg_color="transparent")
-        r2.pack(fill="x", padx=14, pady=(2, 8))
+        r2.pack(fill="x", padx=14, pady=(2, 4))
         ctk.CTkLabel(r2, text="Keep only these pages:", width=170,
                      anchor="w").pack(side="left")
-        ctk.CTkEntry(r2, textvariable=self.keep_pages, width=160).pack(
-            side="left")
+        self._pages_entry(r2, self.keep_pages).pack(side="left")
         ctk.CTkLabel(r2, text="all = keep every page", text_color="gray").pack(
             side="left", padx=8)
+        ctk.CTkLabel(
+            f, text="Leave blank to mean “all”. If a PDF has fewer pages than "
+                    "the range, only its existing pages are used — no blank "
+                    "pages are added.",
+            text_color="gray", font=ctk.CTkFont(size=11), wraplength=300,
+            justify="left", anchor="w").pack(fill="x", padx=10, pady=(2, 8))
         return f
+
+    def _pages_entry(self, parent, var, width=160):
+        """A page-range entry that auto-fills 'all' when left blank."""
+        e = ctk.CTkEntry(parent, textvariable=var, width=width)
+        e.bind("<FocusOut>",
+               lambda _ev, v=var: v.set(v.get().strip() or "all"))
+        return e
 
     # ========================== Decompile tab ========================== #
     def _build_decompile_tab(self, tab):
@@ -971,9 +1081,8 @@ class App(ctk.CTk):
         prow2.pack(fill="x", padx=10, pady=(2, 8))
         ctk.CTkLabel(prow2, text="Pages to include:").pack(side="left",
                                                            padx=(0, 6))
-        ctk.CTkEntry(prow2, textvariable=self.dec_pages, width=160).pack(
-            side="left")
-        ctk.CTkLabel(prow2, text="all = every page, or e.g. 1-3,5",
+        self._pages_entry(prow2, self.dec_pages).pack(side="left")
+        ctk.CTkLabel(prow2, text="blank/all = every page, or e.g. 1-3,5",
                      text_color="gray").pack(side="left", padx=8)
 
         self._build_output_panel(body, row=3, dest_var=self.dest_dec,
@@ -1121,32 +1230,36 @@ class App(ctk.CTk):
         ctk.CTkLabel(lim, text="(max attempts, or seconds)",
                      text_color="gray").pack(side="left")
 
-        mdl = ctk.CTkFrame(f, fg_color="transparent")
-        mdl.grid(row=4, column=0, columnspan=6, sticky="w", padx=10, pady=2)
-        ctk.CTkLabel(mdl, text="Models:").pack(side="left", padx=(0, 4))
-        self._pw_model_vars = {}
-        for mid, meta in models.list_models("password"):
-            var = tk.BooleanVar(value=False)
-            ctk.CTkCheckBox(mdl, text=meta.get("name", mid), variable=var).pack(
-                side="left", padx=6)
-            self._pw_model_vars[mid] = var
-
-        um = ctk.CTkFrame(f, fg_color="transparent")
-        um.grid(row=5, column=0, columnspan=6, sticky="w", padx=10, pady=(2, 8))
-        ctk.CTkLabel(um, text="Your own model (.py with generate(hints)):").pack(
-            side="left", padx=(0, 4))
-        ctk.CTkEntry(um, textvariable=self.user_model_path, width=260,
-                     placeholder_text="path to .py…").pack(side="left")
-        ctk.CTkButton(um, text="…", width=28,
-                      command=self._choose_user_model).pack(side="left", padx=4)
+        ctk.CTkLabel(f, text="Models (from the Models tab):").grid(
+            row=4, column=0, columnspan=6, sticky="w", padx=10, pady=(4, 0))
+        self.pw_models_holder = ctk.CTkFrame(f, fg_color="transparent",
+                                             height=0)
+        self.pw_models_holder.grid(row=5, column=0, columnspan=6, sticky="w",
+                                   padx=10, pady=(0, 8))
+        self._refresh_pw_models()
         return f
 
-    def _choose_user_model(self):
-        path = filedialog.askopenfilename(
-            title="Select a password generator (.py)",
-            filetypes=[("Python", "*.py"), ("All files", "*.*")])
-        if path:
-            self.user_model_path.set(path)
+    def _refresh_pw_models(self):
+        if not hasattr(self, "pw_models_holder"):
+            return
+        prev = {mid: v.get() for mid, v in getattr(self, "_pw_model_vars",
+                                                   {}).items()}
+        for ch in self.pw_models_holder.winfo_children():
+            ch.destroy()
+        self._pw_model_vars = {}
+        avail = models.available_models("password")
+        if not avail:
+            ctk.CTkLabel(self.pw_models_holder,
+                         text="No password models available — add one in the "
+                              "Models tab → Password.",
+                         text_color="#f59e0b",
+                         font=ctk.CTkFont(size=11)).pack(side="left")
+            return
+        for mid, name, _kind in avail:
+            var = tk.BooleanVar(value=prev.get(mid, False))
+            ctk.CTkCheckBox(self.pw_models_holder, text=name, variable=var).pack(
+                side="left", padx=6)
+            self._pw_model_vars[mid] = var
 
     def _download_selected_image_model(self):
         if not models.huggingface_hub_available():
@@ -1259,9 +1372,10 @@ class App(ctk.CTk):
         self._hw = None
         sub = ctk.CTkTabview(tab)
         sub.grid(row=0, column=0, sticky="nsew")
-        for n in ("Overview", "Password", "Image", "Import (HF)"):
+        for n in ("Overview", "Setup", "Password", "Image", "Import (HF)"):
             sub.add(n)
         self._build_models_overview(sub.tab("Overview"))
+        self._build_models_setup(sub.tab("Setup"))
         self._build_category_subtab(sub.tab("Password"), "password")
         self._build_category_subtab(sub.tab("Image"), "image")
         self._build_models_import(sub.tab("Import (HF)"))
@@ -1308,27 +1422,87 @@ class App(ctk.CTk):
                                              anchor="w", wraplength=820)
         self.models_env_label.pack(fill="x", padx=10, pady=(2, 8))
 
-        cats = ctk.CTkFrame(body)
-        cats.pack(fill="x", padx=8, pady=6)
-        ctk.CTkLabel(cats, text="Model categories",
-                     font=ctk.CTkFont(weight="bold"), anchor="w").pack(
-            fill="x", padx=10, pady=(8, 2))
-        for cat, meta in models.CATEGORIES.items():
-            c = ctk.CTkFrame(cats, fg_color=("gray92", "gray16"))
-            c.pack(fill="x", padx=10, pady=4)
-            ctk.CTkLabel(c, text=meta["name"], font=ctk.CTkFont(weight="bold"),
-                         anchor="w").pack(fill="x", padx=8, pady=(6, 0))
-            ctk.CTkLabel(c, text=meta["summary"], anchor="w", justify="left",
-                         wraplength=820, text_color="gray").pack(
-                fill="x", padx=8)
-            ctk.CTkLabel(c, text="I/O: " + meta["io"], anchor="w",
-                         justify="left", wraplength=820,
-                         font=ctk.CTkFont(size=11)).pack(fill="x", padx=8)
-            ctk.CTkLabel(c, text="Category configuration: fixed (not "
-                                 "user-changeable).", anchor="w",
-                         font=ctk.CTkFont(size=11, slant="italic"),
-                         text_color="gray").pack(fill="x", padx=8, pady=(0, 6))
+        ctk.CTkLabel(
+            body, text="Each model category (Password, Image) has its own tab "
+                       "below — open a category tab to read what it does and to "
+                       "download, test or add models. Missing dependencies are "
+                       "fixed in the Setup tab.", anchor="w", justify="left",
+            wraplength=820, text_color="gray").pack(fill="x", padx=12, pady=8)
         self._refresh_models_env()
+
+    def _build_models_setup(self, tab):
+        body = ctk.CTkScrollableFrame(tab, label_text="")
+        body.pack(fill="both", expand=True)
+        ctk.CTkLabel(body, text="Dependencies",
+                     font=ctk.CTkFont(size=15, weight="bold"), anchor="w").pack(
+            fill="x", padx=10, pady=(8, 2))
+        ctk.CTkLabel(
+            body, text="These optional packages enable downloading and running "
+                       "AI models. Install the ones you need — they go into "
+                       "this app's Python environment. (transformers + torch "
+                       "are large.)", anchor="w", justify="left",
+            wraplength=820, text_color="gray").pack(fill="x", padx=10)
+        ctk.CTkLabel(body, text=f"Python: {sys.version.split()[0]}  ·  "
+                                f"{sys.executable}", anchor="w",
+                     font=ctk.CTkFont(size=11), wraplength=820,
+                     justify="left").pack(fill="x", padx=10, pady=(2, 6))
+        self.setup_holder = ctk.CTkFrame(body, fg_color="transparent")
+        self.setup_holder.pack(fill="x", padx=6)
+        btns = ctk.CTkFrame(body, fg_color="transparent")
+        btns.pack(fill="x", padx=10, pady=(4, 8))
+        ctk.CTkButton(btns, text="Re-check", width=90,
+                      command=self._render_setup).pack(side="left", padx=4)
+        ctk.CTkButton(btns, text="Install all missing", width=150,
+                      command=lambda: self._install_deps(None)).pack(
+            side="left", padx=4)
+        self._render_setup()
+
+    def _render_setup(self):
+        for ch in self.setup_holder.winfo_children():
+            ch.destroy()
+        for d in models.dependency_status():
+            row = ctk.CTkFrame(self.setup_holder)
+            row.pack(fill="x", pady=2)
+            mark = "✓ installed" if d["installed"] else "✗ missing"
+            color = "#4ade80" if d["installed"] else "#f59e0b"
+            top = ctk.CTkFrame(row, fg_color="transparent")
+            top.pack(fill="x", padx=8, pady=(6, 0))
+            ctk.CTkLabel(top, text=d["pkg"], width=140, anchor="w",
+                         font=ctk.CTkFont(weight="bold")).pack(side="left")
+            ctk.CTkLabel(top, text=mark, text_color=color, width=110,
+                         anchor="w").pack(side="left")
+            ctk.CTkLabel(top, text=d["purpose"], anchor="w",
+                         text_color="gray", font=ctk.CTkFont(size=11)).pack(
+                side="left", padx=6)
+            if not d["installed"]:
+                ctk.CTkButton(row, text=f"Install {d['pkg']}", width=140,
+                              command=lambda p=d["pkg"]: self._install_deps([p])
+                              ).pack(anchor="w", padx=8, pady=(0, 6))
+        self._refresh_models_env()
+
+    def _install_deps(self, pkgs):
+        if pkgs is None:
+            pkgs = [d["pkg"] for d in models.dependency_status()
+                    if not d["installed"]]
+        if not pkgs:
+            messagebox.showinfo(about_info.APP_NAME,
+                                "All dependencies are already installed.")
+            return
+        if not messagebox.askyesno(
+                about_info.APP_NAME,
+                "Install with pip:\n  " + "  ".join(pkgs)
+                + "\n\nThis may download large files (torch is big). "
+                "Continue?"):
+            return
+        self._log(f"Installing: {', '.join(pkgs)} …")
+
+        def work():
+            models.install_packages(
+                pkgs, log=lambda m: self.msg_queue.put(("log", m)))
+            self.msg_queue.put(("models_refresh", "image"))
+            self.msg_queue.put(("log", "Dependency install finished. If a "
+                                "package still shows missing, restart the app."))
+        threading.Thread(target=work, daemon=True).start()
 
     def _refresh_models_env(self):
         self._hw = models.hardware_info()
@@ -1376,7 +1550,14 @@ class App(ctk.CTk):
             fill="x", padx=10, pady=(8, 0))
         ctk.CTkLabel(body, text=meta.get("summary", ""), anchor="w",
                      justify="left", wraplength=820, text_color="gray").pack(
-            fill="x", padx=10, pady=(0, 6))
+            fill="x", padx=10, pady=(0, 2))
+        ctk.CTkLabel(body, text="I/O: " + meta.get("io", ""), anchor="w",
+                     justify="left", wraplength=820,
+                     font=ctk.CTkFont(size=11)).pack(fill="x", padx=10)
+        ctk.CTkLabel(body, text="Category configuration: fixed (not "
+                                "user-changeable).", anchor="w",
+                     font=ctk.CTkFont(size=11, slant="italic"),
+                     text_color="gray").pack(fill="x", padx=10, pady=(0, 6))
 
         holder = ctk.CTkFrame(body, fg_color="transparent")
         holder.pack(fill="x", padx=6)
@@ -1543,20 +1724,16 @@ class App(ctk.CTk):
     def _build_models_import(self, tab):
         body = ctk.CTkScrollableFrame(tab, label_text="")
         body.pack(fill="both", expand=True)
-        ctk.CTkLabel(body, text="Import a model from Hugging Face",
+        ctk.CTkLabel(body, text="Import & reuse models",
                      font=ctk.CTkFont(size=15, weight="bold"), anchor="w").pack(
             fill="x", padx=10, pady=(8, 2))
-        ctk.CTkLabel(body, text="Enter any Hugging Face repo id; it downloads "
-                                "into your models folder and is registered for "
-                                "the chosen category. Browse models at the "
-                                "sources below.", anchor="w", justify="left",
+        ctk.CTkLabel(body, text="Download a model by its Hugging Face repo id "
+                                "into your shared models folder, or reuse one "
+                                "already downloaded. Imported models then "
+                                "appear in the Password/Image dropdowns. "
+                                "(Guided in-tool search by your PC's capability "
+                                "is planned.)", anchor="w", justify="left",
                      wraplength=820, text_color="gray").pack(fill="x", padx=10)
-        srow = ctk.CTkFrame(body, fg_color="transparent")
-        srow.pack(fill="x", padx=10, pady=(4, 4))
-        for label, url in models.MODEL_SOURCES:
-            ctk.CTkButton(srow, text=f"Open: {label}", width=200,
-                          command=lambda u=url: self._open_url(u)).pack(
-                side="left", padx=4)
 
         form = ctk.CTkFrame(body)
         form.pack(fill="x", padx=8, pady=8)
@@ -1572,18 +1749,49 @@ class App(ctk.CTk):
         ctk.CTkButton(r1, text="Download & import", width=150,
                       command=self._import_hf).pack(side="left", padx=8)
         ctk.CTkLabel(form, text="⚠ Large downloads; image models need "
-                                "transformers + torch to run. Validation lets "
-                                "you force-use a model that fails its test.",
+                                "transformers + torch to run.",
                      text_color="#f59e0b", font=ctk.CTkFont(size=11),
                      anchor="w", justify="left", wraplength=820).pack(
             fill="x", padx=10, pady=(0, 8))
 
-    def _open_url(self, url):
-        import webbrowser
-        try:
-            webbrowser.open(url)
-        except Exception:
-            messagebox.showinfo(about_info.APP_NAME, url)
+        lrow = ctk.CTkFrame(body, fg_color="transparent")
+        lrow.pack(fill="x", padx=10, pady=(4, 0))
+        ctk.CTkLabel(lrow, text="Available locally (reuse in any project)",
+                     font=ctk.CTkFont(weight="bold")).pack(side="left")
+        ctk.CTkButton(lrow, text="Refresh", width=70,
+                      command=self._render_import_local).pack(side="right")
+        self.import_local_holder = ctk.CTkFrame(body, fg_color="transparent")
+        self.import_local_holder.pack(fill="x", padx=8, pady=(2, 8))
+        self._render_import_local()
+
+    def _render_import_local(self):
+        if not hasattr(self, "import_local_holder"):
+            return
+        for ch in self.import_local_holder.winfo_children():
+            ch.destroy()
+        any_model = False
+        for cat in models.CATEGORIES:
+            avail = models.available_models(cat)
+            if not avail:
+                continue
+            any_model = True
+            ctk.CTkLabel(self.import_local_holder,
+                         text=models.category_meta(cat).get("name", cat) + ":",
+                         anchor="w", font=ctk.CTkFont(size=11,
+                                                      weight="bold")).pack(
+                fill="x", padx=4, pady=(4, 0))
+            for _mid, name, kind in avail:
+                ctk.CTkLabel(self.import_local_holder,
+                             text=f"   • {name}  [{kind}]", anchor="w",
+                             font=ctk.CTkFont(size=11)).pack(fill="x", padx=8)
+        if not any_model:
+            ctk.CTkLabel(self.import_local_holder,
+                         text="No usable models yet (built-in password models "
+                              "aside). Install dependencies in Setup, then "
+                              "download in a category tab.",
+                         text_color="gray", font=ctk.CTkFont(size=11),
+                         anchor="w", justify="left", wraplength=820).pack(
+                fill="x", padx=4)
 
     def _import_hf(self):
         repo = self.import_repo.get().strip()
@@ -1810,13 +2018,17 @@ class App(ctk.CTk):
         mp = p.get("modify_pdf", {})
         self.modify_enabled.set(mp.get("enabled", False))
         self.modify_mode.set(mp.get("mode", "execute"))
-        self.remove_mode.set("all" if mp.get("remove_vector") else "images")
+        if not mp.get("remove_images", True):
+            self.remove_mode.set("none")
+        else:
+            self.remove_mode.set("all" if mp.get("remove_vector") else "images")
         self.remove_restrictions.set(
             mp.get("remove_restrictions_and_password", False))
         ai = mp.get("image_ai_analysis", {}) or {}
         self.ai_analysis_enabled.set(ai.get("enabled", False))
         self.ai_model.set(ai.get("model") or "img-blip-base")
         self.ai_user_model.set(ai.get("user_model", "") or "")
+        self._refresh_ai_models()
         self.process_pages.set(mp.get("page_range", "all") or "all")
         self.keep_pages.set(mp.get("keep_pages", "all") or "all")
         self._set_text_reps(mp.get("search_replace_text", []) or [])
@@ -1825,15 +2037,18 @@ class App(ctk.CTk):
         self.sec_pw_mode.set(sec.get("set_user_password", "none"))
         self.sec_user_pw.set(sec.get("user_password", ""))
         self.sec_restrict.set(sec.get("restrict", False))
+        self.sec_owner_mode.set(sec.get("owner_pw_mode", "random"))
         self.sec_owner_pw.set(sec.get("owner_password", ""))
         sp = sec.get("permissions", {}) or {}
         for name, var in self.sec_perms.items():
             var.set(sp.get(name, True))
+        self._update_restrict_state()
         meta = mp.get("metadata", {}) or {}
         self.meta_title.set(meta.get("title", ""))
         self.meta_author.set(meta.get("author", ""))
         self.meta_subject.set(meta.get("subject", ""))
         self.meta_keywords.set(meta.get("keywords", ""))
+        self._refresh_pw_models()
         self._apply_cracking(p.get("passwords", {}).get("cracking", {}))
         dc = p.get("decompile", {})
         self.dec_enabled.set(dc.get("enabled", False))
@@ -1864,13 +2079,15 @@ class App(ctk.CTk):
         mpf = p["modify_pdf"]
         mpf["enabled"] = bool(self.modify_enabled.get())
         mpf["mode"] = self.modify_mode.get()
+        mpf["remove_images"] = self.remove_mode.get() != "none"
         mpf["remove_vector"] = self.remove_mode.get() == "all"
         mpf["remove_restrictions_and_password"] = bool(
             self.remove_restrictions.get())
+        ai_map = getattr(self, "_ai_model_map", {})
         mpf["image_ai_analysis"] = {
             "enabled": bool(self.ai_analysis_enabled.get()),
-            "model": self.ai_model.get(),
-            "user_model": self.ai_user_model.get().strip()}
+            "model": ai_map.get(self.ai_model.get(), self.ai_model.get()),
+            "user_model": ""}
         mpf["page_range"] = self.process_pages.get().strip() or "all"
         mpf["keep_pages"] = self.keep_pages.get().strip() or "all"
         mpf["search_replace_text"] = self._gather_text_reps()
@@ -1879,6 +2096,7 @@ class App(ctk.CTk):
             "set_user_password": self.sec_pw_mode.get(),
             "user_password": self.sec_user_pw.get(),
             "restrict": bool(self.sec_restrict.get()),
+            "owner_pw_mode": self.sec_owner_mode.get(),
             "owner_password": self.sec_owner_pw.get(),
             "permissions": {n: bool(v.get())
                             for n, v in self.sec_perms.items()},
@@ -1973,11 +2191,10 @@ class App(ctk.CTk):
         bf["threads"] = self._int_or(self.bf_threads, 4)
         bf["limit_type"] = self.bf_limit_type.get()
         bf["limit_value"] = self._int_or(self.bf_limit_value, 1_000_000)
+        # Selected ids include registered user models (resolved by the backend).
         cr["model"]["selected"] = [mid for mid, var in self._pw_model_vars.items()
                                    if var.get()]
-        ump = self.user_model_path.get().strip()
-        cr["model"]["user_models"] = (
-            [{"id": os.path.basename(ump), "path": ump}] if ump else [])
+        cr["model"]["user_models"] = []
 
     def _apply_cracking(self, cr):
         self.crack_enabled.set(cr.get("enabled", False))
@@ -2178,6 +2395,12 @@ class App(ctk.CTk):
                     self._on_crack_done()
                 elif kind == "models_refresh":
                     self._render_category_models(payload)
+                    self._refresh_ai_models()
+                    self._refresh_pw_models()
+                    if hasattr(self, "setup_holder"):
+                        self._render_setup()
+                    if hasattr(self, "import_local_holder"):
+                        self._render_import_local()
                 elif kind == "ipreview_start":
                     self._clear_insp_body()
                     if payload > self.PREVIEW_PAGE_CAP:

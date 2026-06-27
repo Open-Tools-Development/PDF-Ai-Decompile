@@ -9,7 +9,7 @@ description: >
   (3) convert a PDF into a full-text Markdown file with no images. The LaTeX and
   Markdown outputs are optimised for AI tools to read without processing the PDF.
   Use this document to understand the whole tool before modifying or extending it.
-version: "4.3"
+version: "4.4"
 authors:
   - Jerry James
   - Nisha Elizabeth
@@ -556,9 +556,20 @@ A dedicated **Models** top-level tab with a sub-tabview:
 Overrides: downloading a not-recommended model warns first ("Download anyway?").
 Categories today: **password** and **image** (the image captioner is reusable in
 Decompile later). **Download/import need `huggingface_hub`; image models need
-`transformers`+`torch`** — the tab shows what's missing (this was the cause of
-"download not working"). Built-in password models and the heuristic captioner
-need nothing.
+`transformers`+`torch`** — the **Setup** sub-tab detects these and installs them
+with one click (`models.dependency_status` / `install_packages`, via `pip` in the
+running interpreter). Built-in password models and the heuristic captioner need
+nothing. Category details live on each category tab; the Import tab lists reusable
+local models. Elsewhere, model pickers use `models.available_models(category)` —
+dropdowns of what can actually run now; when a category has none, that AI option
+**disables itself with guidance** to the Models tab (no inline download/browse).
+
+**Still planned (item set after v4.4):** guided in-tool HF search by PC
+capability (item 10); **LLM** models with fixed per-category + optional user
+instructions (item 11); connecting to **local LLM servers** — Ollama, llama.cpp,
+Jan, GPT4All, LocalAI, vLLM, LMDeploy — with auto-detect + connection test (item
+12); and **cloud AI** providers — Claude, ChatGPT, … — with connection test
+(item 13). These form a provider layer to be built next.
 
 ### 13.7 Dependencies
 Core stays the same (`PyMuPDF`, `customtkinter`, `Pillow`) — restrictions/

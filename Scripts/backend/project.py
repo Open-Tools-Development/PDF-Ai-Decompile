@@ -88,7 +88,8 @@ def default_project(name: str = "Untitled Project") -> dict:
                 "set_user_password": "none",   # none | fixed | random
                 "user_password": "",
                 "restrict": False,             # apply owner-password restrictions
-                "owner_password": "",          # blank → auto-generated
+                "owner_pw_mode": "random",     # auto | fixed | random
+                "owner_password": "",          # used when owner_pw_mode == fixed
                 # Allowed actions (unchecked == denied). Defaults: allow all.
                 "permissions": {"print": True, "copy": True, "modify": True,
                                 "annotate": True, "fill_forms": True,

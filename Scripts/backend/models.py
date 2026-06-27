@@ -133,6 +133,77 @@ def model_meta(model_id) -> dict:
     return MANIFEST.get(model_id, {})
 
 
+def available_models(category, root=None) -> list:
+    """Models usable *right now* for a category: ``[(id, name, kind)]``.
+
+    Used to populate model dropdowns elsewhere (item 7): built-in models, any
+    downloaded curated models, and registered user models — only those that can
+    actually run on this machine.
+    """
+    out = []
+    for mid, meta in list_models(category):
+        status = install_status(mid, root)
+        if status == "built-in":
+            out.append((mid, meta["name"], "built-in"))
+        elif status == "installed" and (category != "image"
+                                        or _transformers_available()):
+            out.append((mid, meta["name"], "installed"))
+    for um in list_user_models(category, root):
+        path = str(um.get("path", ""))
+        if category == "password":
+            if path.endswith(".py") and os.path.exists(path):
+                out.append((um["id"], um.get("name", um["id"]), "user"))
+        elif _transformers_available():
+            out.append((um["id"], um.get("name", um["id"]), "user"))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+#  Environment dependencies (item 8) — detect + install                        #
+# --------------------------------------------------------------------------- #
+DEPENDENCIES = [
+    {"pkg": "huggingface_hub", "import": "huggingface_hub",
+     "purpose": "Download / import models from Hugging Face"},
+    {"pkg": "transformers", "import": "transformers",
+     "purpose": "Run image (and future LLM) models"},
+    {"pkg": "torch", "import": "torch",
+     "purpose": "PyTorch backend needed by image models"},
+]
+
+
+def dependency_status() -> list:
+    import importlib
+    importlib.invalidate_caches()
+    out = []
+    for d in DEPENDENCIES:
+        installed = importlib.util.find_spec(d["import"]) is not None
+        out.append({**d, "installed": installed})
+    return out
+
+
+def install_packages(pkgs, log=None) -> bool:
+    """pip-install the given packages into the running interpreter. Streams
+    output through ``log``. Returns True on success."""
+    import subprocess
+    log = log or (lambda _m: None)
+    cmd = [sys.executable, "-m", "pip", "install", "--upgrade", *pkgs]
+    log("Running: " + " ".join(cmd))
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+        for line in proc.stdout:
+            log(line.rstrip())
+        proc.wait()
+        ok = proc.returncode == 0
+        log("Done." if ok else f"pip exited with code {proc.returncode}.")
+        import importlib
+        importlib.invalidate_caches()
+        return ok
+    except Exception as exc:  # noqa: BLE001
+        log(f"Install failed: {exc}")
+        return False
+
+
 def _transformers_available() -> bool:
     return (importlib.util.find_spec("transformers") is not None
             and importlib.util.find_spec("torch") is not None)

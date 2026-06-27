@@ -315,6 +315,13 @@ def _run_one(job, project, src_path, work_path, stem, ext, validate, analyzer,
         if os.path.abspath(out_path) == os.path.abspath(src_path):
             out_path = os.path.join(target, f"{stem}_noimg{ext}")
 
+        remove_images = mcfg.get("remove_images", True)
+        # "Do nothing" (item 6): no removal and no other action → skip.
+        if (not remove_images and analyzer is None
+                and not pdf_modify.has_advanced_options(mcfg)):
+            log(f"  {name}: Modify has no actions selected — skipped")
+            return
+
         if pdf_modify.has_advanced_options(mcfg) or analyzer is not None:
             rep = pdf_modify.apply_modifications(
                 work_path, None if validate else out_path,

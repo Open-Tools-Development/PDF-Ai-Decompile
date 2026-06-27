@@ -4,7 +4,7 @@
   "project": {
     "name": "Test_WS",
     "created": "2026-06-25T02:03:51+00:00",
-    "modified": "2026-06-26T03:07:14+00:00",
+    "modified": "2026-06-27T02:02:10+00:00",
     "assets_dir": "Test_WS"
   },
   "files": [
@@ -195,7 +195,29 @@
       "user_model": ""
     },
     "page_range": "all",
-    "keep_pages": "all"
+    "keep_pages": "all",
+    "security": {
+      "set_user_password": "none",
+      "user_password": "",
+      "restrict": false,
+      "owner_password": "",
+      "permissions": {
+        "print": true,
+        "copy": true,
+        "modify": true,
+        "annotate": true,
+        "fill_forms": true,
+        "accessibility": true,
+        "assemble": true,
+        "print_hq": true
+      }
+    },
+    "metadata": {
+      "title": "",
+      "author": "",
+      "subject": "",
+      "keywords": ""
+    }
   },
   "decompile": {
     "enabled": true,

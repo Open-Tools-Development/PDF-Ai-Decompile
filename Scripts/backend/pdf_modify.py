@@ -85,11 +85,14 @@ def _resolve_security(security):
     if not user_pw and not restrict:
         return none, {}
 
-    owner_pw = security.get("owner_password") or None
+    owner_pw = None
     perms = _ALL_PERMS
     if restrict:
         perms = _permissions_int(security.get("permissions", {}))
-        if not owner_pw:
+        owner_mode = security.get("owner_pw_mode", "random")
+        if owner_mode == "fixed":
+            owner_pw = security.get("owner_password") or generate_password(length)
+        else:   # "random" or "auto" → a distinct random owner password
             owner_pw = generate_password(length)
     if not owner_pw:
         owner_pw = user_pw   # owner == user when only a user password is set
