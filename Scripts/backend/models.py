@@ -155,6 +155,14 @@ def available_models(category, root=None) -> list:
                 out.append((um["id"], um.get("name", um["id"]), "user"))
         elif _transformers_available():
             out.append((um["id"], um.get("name", um["id"]), "user"))
+    # Configured LLM provider connections (Ollama, Claude, OpenAI, …).
+    try:
+        from . import providers as _prov
+        for p in _prov.providers_for_category(category):
+            out.append(("llm:" + p["id"], (p.get("name") or p["id"]) + " (LLM)",
+                        "llm"))
+    except Exception:
+        pass
     return out
 
 
@@ -181,27 +189,70 @@ def dependency_status() -> list:
     return out
 
 
-def install_packages(pkgs, log=None) -> bool:
-    """pip-install the given packages into the running interpreter. Streams
-    output through ``log``. Returns True on success."""
+def _pip_python():
+    """Return a Python executable that can run pip, or None.
+
+    In a PyInstaller build ``sys.executable`` is the app .exe (it cannot run
+    ``-m pip`` — that would just relaunch the app), so look for a real Python.
+    """
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+    import shutil
+    for name in ("python", "python3", "py"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def install_packages(pkgs, log=None) -> dict:
+    """pip-install ``pkgs``, streaming ALL output through ``log``. Returns a
+    ``{pkg: importable_now}`` dict so the caller can report real success."""
+    import importlib
     import subprocess
     log = log or (lambda _m: None)
-    cmd = [sys.executable, "-m", "pip", "install", "--upgrade", *pkgs]
+    frozen = getattr(sys, "frozen", False)
+    log("-" * 50)
+    log(f"Python: {sys.executable}")
+    log(f"Packaged app (frozen): {frozen}")
+    if frozen:
+        log("NOTE: the packaged .exe bundles its own Python and CANNOT have "
+            "packages added to it. To use AI models, run the tool from source "
+            "(python run_app.py) in a Python where you can pip-install, and "
+            "install the dependencies there.")
+    py = _pip_python()
+    names = {d["pkg"]: d["import"] for d in DEPENDENCIES}
+    if py is None:
+        log("ERROR: could not find a Python with pip to run the install.")
+        return {p: False for p in pkgs}
+
+    cmd = [py, "-m", "pip", "install", "--upgrade",
+           "--disable-pip-version-check", *pkgs]
     log("Running: " + " ".join(cmd))
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True)
+                                stderr=subprocess.STDOUT, text=True, bufsize=1,
+                                env=env)
         for line in proc.stdout:
             log(line.rstrip())
         proc.wait()
-        ok = proc.returncode == 0
-        log("Done." if ok else f"pip exited with code {proc.returncode}.")
-        import importlib
-        importlib.invalidate_caches()
-        return ok
+        log(f"pip finished with exit code {proc.returncode}.")
     except Exception as exc:  # noqa: BLE001
-        log(f"Install failed: {exc}")
-        return False
+        log(f"Install failed to start: {exc}")
+        return {p: False for p in pkgs}
+
+    importlib.invalidate_caches()
+    results = {}
+    for pkg in pkgs:
+        mod = names.get(pkg, pkg)
+        ok = importlib.util.find_spec(mod) is not None
+        results[pkg] = ok
+        log(f"  Verify {pkg}: " + ("OK — importable now"
+                                   if ok else "STILL NOT IMPORTABLE"))
+    log("-" * 50)
+    return results
 
 
 def _transformers_available() -> bool:
@@ -319,6 +370,34 @@ def register_user_model(category, name, source, root=None) -> dict:
     except Exception:
         pass
     return entry
+
+
+_HF_PIPELINE = {"image": "image-to-text"}
+
+
+def search_hf(query, category=None, limit=20) -> list:
+    """Search Hugging Face for models (item 10). Returns
+    ``[{id, downloads, likes, pipeline}]`` sorted by downloads."""
+    try:
+        from huggingface_hub import HfApi
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Searching needs the 'huggingface_hub' package. Install it in the "
+            "Setup tab. " + str(exc))
+    api = HfApi()
+    try:
+        results = api.list_models(search=query or None,
+                                  pipeline_tag=_HF_PIPELINE.get(category),
+                                  sort="downloads", limit=limit)
+    except TypeError:
+        results = api.list_models(search=query or None, limit=limit)
+    out = []
+    for m in results:
+        out.append({"id": m.id,
+                    "downloads": getattr(m, "downloads", None),
+                    "likes": getattr(m, "likes", None),
+                    "pipeline": getattr(m, "pipeline_tag", None)})
+    return out
 
 
 def import_hf_model(repo, category, progress=None, root=None) -> dict:
@@ -518,6 +597,13 @@ def make_password_generator(model_id, hints):
     max_len = int(hints.get("max_len", 16))
     count = int(hints.get("count", 5000))
 
+    if isinstance(model_id, str) and model_id.startswith("llm:"):
+        try:
+            from . import providers as _prov
+            return _prov.generate_passwords(
+                model_id[4:], hints, hints.get("user_instruction", ""))
+        except Exception:
+            return []
     if model_id == "pw-markov-builtin":
         return _markov_generate(samples, count, min_len, max_len)
     if model_id == "pw-rules-builtin":
@@ -550,10 +636,23 @@ def _load_user_module(path):
 # --------------------------------------------------------------------------- #
 #  Image captioner                                                             #
 # --------------------------------------------------------------------------- #
-def make_image_captioner(model_id="img-blip-base", user_model=None):
+def make_image_captioner(model_id="img-blip-base", user_model=None,
+                         user_instruction=""):
     """Return ``caption(png_bytes) -> str``. Uses a real model if available,
     else a dependency-free heuristic. ``user_model`` (a local HF model dir or a
-    Hugging Face repo id) overrides ``model_id`` when given."""
+    Hugging Face repo id) overrides ``model_id`` when given. An ``llm:<id>``
+    model id routes to a configured LLM provider connection."""
+    if isinstance(model_id, str) and model_id.startswith("llm:"):
+        from . import providers as _prov
+        pid = model_id[4:]
+
+        def llm_caption(png_bytes):
+            try:
+                return _prov.caption_image(pid, png_bytes, user_instruction)
+            except Exception as exc:  # noqa: BLE001
+                return f"[LLM error: {exc}]"
+        return llm_caption
+
     real = None
     if _transformers_available():
         real = _try_load_blip(user_model or model_id)

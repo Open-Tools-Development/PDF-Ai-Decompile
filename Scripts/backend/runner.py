@@ -108,10 +108,11 @@ def recover_password(fentry: dict, project: dict, *, stop=None, log=None) -> dic
     method = cr.get("method", "bruteforce")
     bf = dict(cr.get("bruteforce", {}))
     if method in ("model", "both"):
+        mc = cr.get("model", {})
         hints = {"samples": list(dict.fromkeys(extra)),
                  "min_len": int(bf.get("min_len", 1)),
-                 "max_len": int(bf.get("max_len", 16)), "count": 5000}
-        mc = cr.get("model", {})
+                 "max_len": int(bf.get("max_len", 16)), "count": 5000,
+                 "user_instruction": mc.get("user_instruction", "")}
         for mid in mc.get("selected", []):
             try:
                 extra += list(models.make_password_generator(mid, hints))
@@ -216,7 +217,9 @@ def run(project: dict, *, log=None, progress=None, stop=None,
         mid = ai.get("model") or "img-blip-base"
         user_model = (ai.get("user_model") or "").strip() or None
         try:
-            analyzer = models.make_image_captioner(mid, user_model=user_model)
+            analyzer = models.make_image_captioner(
+                mid, user_model=user_model,
+                user_instruction=ai.get("user_instruction", ""))
         except Exception:
             analyzer = None
 

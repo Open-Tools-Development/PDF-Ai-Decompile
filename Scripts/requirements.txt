@@ -4,5 +4,9 @@ Pillow>=9.0.0
 
 # Optional AI extras (download-on-demand image captioning). The tool runs fully
 # without these — built-in password models and a heuristic captioner are used.
-#   pip install huggingface_hub        # download curated models on demand
+#   pip install huggingface_hub        # download / search models on demand
 #   pip install transformers torch     # real image captioning (e.g. BLIP)
+#   pip install anthropic              # optional: nicer Claude connection
+#                                      #   (raw HTTP is used if it's absent)
+# Local LLM servers (Ollama, LM Studio, vLLM, …) and OpenAI need only a URL/key,
+# configured in the Models ▸ Connections tab — no extra Python package.

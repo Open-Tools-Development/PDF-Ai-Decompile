@@ -80,7 +80,7 @@ def default_project(name: str = "Untitled Project") -> dict:
             "search_replace_text": [],    # [{find, replace, regex}]
             "search_replace_image": [],   # [{image, match_pct, action, replacement}]
             "image_ai_analysis": {"enabled": False, "model": "img-blip-base",
-                                  "user_model": ""},
+                                  "user_model": "", "user_instruction": ""},
             "page_range": "all",          # "all" | "1-3,5" (process which pages)
             "keep_pages": "all",          # "all" | "1-3,5" (pages kept in output)
             # Output security: set a new open password and/or restrictions.

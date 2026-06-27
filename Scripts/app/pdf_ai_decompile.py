@@ -37,6 +37,7 @@ from backend import project as projmod
 from backend import pdf_info
 from backend import runner
 from backend import models
+from backend import providers
 
 
 # --------------------------------------------------------------------------- #
@@ -240,7 +241,18 @@ class App(ctk.CTk):
         self.models_root_var = tk.StringVar(value="")
         self.import_repo = tk.StringVar(value="")
         self.import_category = tk.StringVar(value="image")
+        self.hf_query = tk.StringVar(value="")
         self._cat_user_inputs = {}   # category -> (name_var, source_var)
+
+        # Connections (LLM providers).
+        self.conn_type = tk.StringVar(value="ollama")
+        self.conn_name = tk.StringVar(value="")
+        self.conn_base = tk.StringVar(value="")
+        self.conn_key = tk.StringVar(value="")
+        self.conn_model = tk.StringVar(value="")
+        self.conn_cat_image = tk.BooleanVar(value=True)
+        self.conn_cat_password = tk.BooleanVar(value=False)
+        self.ai_user_instruction = tk.StringVar(value="")
         self._text_rep_rows = []     # (find_var, replace_var, regex_var)
         self._img_rep_rows = []      # (image_var, pct_var, action_var, repl_var)
 
@@ -961,7 +973,14 @@ class App(ctk.CTk):
         self.ai_status_label = ctk.CTkLabel(
             f, text="", text_color="#f59e0b", font=ctk.CTkFont(size=11),
             wraplength=300, justify="left", anchor="w")
-        self.ai_status_label.pack(fill="x", padx=10, pady=(0, 8))
+        self.ai_status_label.pack(fill="x", padx=10, pady=(0, 2))
+        irow = ctk.CTkFrame(f, fg_color="transparent")
+        irow.pack(fill="x", padx=14, pady=(0, 8))
+        ctk.CTkLabel(irow, text="Custom instruction (LLM, optional):").pack(
+            side="left", padx=(0, 6))
+        ctk.CTkEntry(irow, textvariable=self.ai_user_instruction, width=200,
+                     placeholder_text="e.g. focus on text in the image").pack(
+            side="left", fill="x", expand=True)
         self._refresh_ai_models()
         return f
 
@@ -1372,12 +1391,14 @@ class App(ctk.CTk):
         self._hw = None
         sub = ctk.CTkTabview(tab)
         sub.grid(row=0, column=0, sticky="nsew")
-        for n in ("Overview", "Setup", "Password", "Image", "Import (HF)"):
+        for n in ("Overview", "Setup", "Password", "Image", "Connections",
+                  "Import (HF)"):
             sub.add(n)
         self._build_models_overview(sub.tab("Overview"))
         self._build_models_setup(sub.tab("Setup"))
         self._build_category_subtab(sub.tab("Password"), "password")
         self._build_category_subtab(sub.tab("Image"), "image")
+        self._build_models_connections(sub.tab("Connections"))
         self._build_models_import(sub.tab("Import (HF)"))
 
     def _build_models_overview(self, tab):
@@ -1494,14 +1515,21 @@ class App(ctk.CTk):
                 + "\n\nThis may download large files (torch is big). "
                 "Continue?"):
             return
-        self._log(f"Installing: {', '.join(pkgs)} …")
+        self._log(f"Installing: {', '.join(pkgs)} … (full pip log below)")
 
         def work():
-            models.install_packages(
+            res = models.install_packages(
                 pkgs, log=lambda m: self.msg_queue.put(("log", m)))
+            ok = [p for p, v in res.items() if v]
+            bad = [p for p, v in res.items() if not v]
+            if ok:
+                self.msg_queue.put(("log", f"Installed OK: {', '.join(ok)}"))
+            if bad:
+                self.msg_queue.put((
+                    "log", f"NOT installed: {', '.join(bad)} — see the pip log "
+                    "above. If you are running the packaged .exe, install these "
+                    "in a from-source Python instead, then restart."))
             self.msg_queue.put(("models_refresh", "image"))
-            self.msg_queue.put(("log", "Dependency install finished. If a "
-                                "package still shows missing, restart the app."))
         threading.Thread(target=work, daemon=True).start()
 
     def _refresh_models_env(self):
@@ -1721,6 +1749,158 @@ class App(ctk.CTk):
         self._log(f"Removed model {mid}")
         self._render_category_models(category)
 
+    # ---- Connections: local LLM servers + cloud AI (items 11/12/13) ----
+    def _build_models_connections(self, tab):
+        body = ctk.CTkScrollableFrame(tab, label_text="")
+        body.pack(fill="both", expand=True)
+        ctk.CTkLabel(body, text="LLM connections",
+                     font=ctk.CTkFont(size=15, weight="bold"), anchor="w").pack(
+            fill="x", padx=10, pady=(8, 2))
+        ctk.CTkLabel(
+            body, text="Connect to a local LLM server (Ollama, LM Studio, Jan, "
+                       "GPT4All, LocalAI, vLLM, LMDeploy) or a cloud platform "
+                       "(Anthropic/Claude, OpenAI/ChatGPT). Assign it to a "
+                       "category and it appears in that category's model "
+                       "dropdown.", anchor="w", justify="left", wraplength=820,
+            text_color="gray").pack(fill="x", padx=10)
+
+        form = ctk.CTkFrame(body)
+        form.pack(fill="x", padx=8, pady=8)
+        r1 = ctk.CTkFrame(form, fg_color="transparent")
+        r1.pack(fill="x", padx=10, pady=(8, 2))
+        ctk.CTkLabel(r1, text="Type:").pack(side="left", padx=(0, 4))
+        ctk.CTkOptionMenu(r1, variable=self.conn_type, width=200,
+                          values=[k for k, _ in providers.list_provider_types()],
+                          command=self._on_conn_type).pack(side="left")
+        ctk.CTkLabel(r1, text="Name:").pack(side="left", padx=(10, 4))
+        ctk.CTkEntry(r1, textvariable=self.conn_name, width=140,
+                     placeholder_text="my connection").pack(side="left")
+        r2 = ctk.CTkFrame(form, fg_color="transparent")
+        r2.pack(fill="x", padx=10, pady=2)
+        ctk.CTkLabel(r2, text="Base URL:").pack(side="left", padx=(0, 4))
+        ctk.CTkEntry(r2, textvariable=self.conn_base, width=300).pack(side="left")
+        ctk.CTkLabel(r2, text="Model:").pack(side="left", padx=(10, 4))
+        ctk.CTkEntry(r2, textvariable=self.conn_model, width=160,
+                     placeholder_text="model id").pack(side="left")
+        r3 = ctk.CTkFrame(form, fg_color="transparent")
+        r3.pack(fill="x", padx=10, pady=2)
+        ctk.CTkLabel(r3, text="API key:").pack(side="left", padx=(0, 4))
+        ctk.CTkEntry(r3, textvariable=self.conn_key, width=300, show="•",
+                     placeholder_text="(cloud only)").pack(side="left")
+        ctk.CTkLabel(r3, text="Use for:").pack(side="left", padx=(10, 4))
+        ctk.CTkCheckBox(r3, text="image", variable=self.conn_cat_image,
+                        width=70).pack(side="left")
+        ctk.CTkCheckBox(r3, text="password",
+                        variable=self.conn_cat_password).pack(side="left")
+        r4 = ctk.CTkFrame(form, fg_color="transparent")
+        r4.pack(fill="x", padx=10, pady=(2, 8))
+        ctk.CTkButton(r4, text="Add connection", width=130,
+                      command=self._add_connection).pack(side="left", padx=4)
+        ctk.CTkButton(r4, text="Auto-detect local", width=140, fg_color="gray30",
+                      hover_color="gray25",
+                      command=self._autodetect_connections).pack(side="left",
+                                                                  padx=4)
+        self._on_conn_type(self.conn_type.get())
+
+        lrow = ctk.CTkFrame(body, fg_color="transparent")
+        lrow.pack(fill="x", padx=10, pady=(4, 0))
+        ctk.CTkLabel(lrow, text="Saved connections",
+                     font=ctk.CTkFont(weight="bold")).pack(side="left")
+        ctk.CTkButton(lrow, text="Refresh", width=70,
+                      command=self._render_connections).pack(side="right")
+        self.conn_holder = ctk.CTkFrame(body, fg_color="transparent")
+        self.conn_holder.pack(fill="x", padx=8, pady=(2, 8))
+        ctk.CTkLabel(
+            body, text="Each category sends a fixed instruction defining its "
+                       "task + output; add an optional custom instruction in "
+                       "the category’s options. Cloud keys are stored encrypted "
+                       "in your user folder.", text_color="gray",
+            font=ctk.CTkFont(size=11), anchor="w", justify="left",
+            wraplength=820).pack(fill="x", padx=10)
+        self._render_connections()
+
+    def _on_conn_type(self, value):
+        meta = providers.PROVIDER_TYPES.get(value, {})
+        if not self.conn_base.get():
+            self.conn_base.set(meta.get("base_url", ""))
+        if not self.conn_model.get():
+            self.conn_model.set(meta.get("default_model", ""))
+
+    def _add_connection(self):
+        cats = []
+        if self.conn_cat_image.get():
+            cats.append("image")
+        if self.conn_cat_password.get():
+            cats.append("password")
+        meta = providers.PROVIDER_TYPES.get(self.conn_type.get(), {})
+        cfg = {"name": self.conn_name.get().strip() or meta.get("name"),
+               "type": self.conn_type.get(), "api": meta.get("api"),
+               "base_url": self.conn_base.get().strip(),
+               "api_key": self.conn_key.get().strip(),
+               "model": self.conn_model.get().strip(), "categories": cats}
+        providers.add_provider(cfg)
+        self._log(f"Added connection: {cfg['name']} ({cfg['type']})")
+        self.conn_name.set(""); self.conn_key.set("")
+        self._render_connections()
+        self._refresh_ai_models(); self._refresh_pw_models()
+
+    def _autodetect_connections(self):
+        self._log("Auto-detecting local LLM servers…")
+
+        def work():
+            found = providers.autodetect_local()
+            if not found:
+                self.msg_queue.put(("log", "  No local LLM servers detected on "
+                                    "common ports."))
+            for f in found:
+                f["categories"] = ["image"]
+                providers.add_provider(f)
+                self.msg_queue.put(("log", f"  Detected {f['name']} at "
+                                    f"{f['base_url']}"))
+            self.msg_queue.put(("conn_refresh", None))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _render_connections(self):
+        if not hasattr(self, "conn_holder"):
+            return
+        for ch in self.conn_holder.winfo_children():
+            ch.destroy()
+        provs = providers.load_providers()
+        if not provs:
+            ctk.CTkLabel(self.conn_holder, text="No connections yet.",
+                         text_color="gray").pack(anchor="w", padx=4, pady=4)
+            return
+        for p in provs:
+            row = ctk.CTkFrame(self.conn_holder)
+            row.pack(fill="x", pady=2)
+            cats = ", ".join(p.get("categories") or []) or "—"
+            ctk.CTkLabel(
+                row, text=f"{p.get('name')}  [{p.get('type')}]  "
+                          f"{p.get('base_url')}  model:{p.get('model') or '?'}  "
+                          f"use:{cats}", anchor="w").pack(side="left", padx=8,
+                                                          pady=6)
+            ctk.CTkButton(row, text="Remove", width=70, fg_color="gray30",
+                          hover_color="#b91c1c",
+                          command=lambda i=p["id"]: self._remove_connection(i)
+                          ).pack(side="right", padx=4)
+            ctk.CTkButton(row, text="Test", width=60,
+                          command=lambda c=p: self._test_connection(c)).pack(
+                side="right", padx=2)
+
+    def _remove_connection(self, pid):
+        providers.remove_provider(pid)
+        self._render_connections()
+        self._refresh_ai_models(); self._refresh_pw_models()
+
+    def _test_connection(self, cfg):
+        self._log(f"Testing {cfg.get('name')}…")
+
+        def work():
+            ok, msg = providers.test_connection(cfg)
+            self.msg_queue.put(("log", f"  {cfg.get('name')}: "
+                                f"{'OK' if ok else 'FAIL'} — {msg}"))
+        threading.Thread(target=work, daemon=True).start()
+
     def _build_models_import(self, tab):
         body = ctk.CTkScrollableFrame(tab, label_text="")
         body.pack(fill="both", expand=True)
@@ -1753,6 +1933,24 @@ class App(ctk.CTk):
                      text_color="#f59e0b", font=ctk.CTkFont(size=11),
                      anchor="w", justify="left", wraplength=820).pack(
             fill="x", padx=10, pady=(0, 8))
+
+        srch = ctk.CTkFrame(body)
+        srch.pack(fill="x", padx=8, pady=(4, 8))
+        sr = ctk.CTkFrame(srch, fg_color="transparent")
+        sr.pack(fill="x", padx=10, pady=(8, 2))
+        ctk.CTkLabel(sr, text="Search Hugging Face:").pack(side="left",
+                                                           padx=(0, 4))
+        ctk.CTkEntry(sr, textvariable=self.hf_query, width=240,
+                     placeholder_text="e.g. image caption").pack(side="left",
+                                                                  padx=2)
+        ctk.CTkButton(sr, text="Search", width=90,
+                      command=self._search_hf).pack(side="left", padx=6)
+        ctk.CTkLabel(srch, text="Results (sorted by downloads). Pick one and "
+                                "Import.", text_color="gray",
+                     font=ctk.CTkFont(size=11), anchor="w").pack(fill="x",
+                                                                 padx=10)
+        self.hf_results_holder = ctk.CTkFrame(srch, fg_color="transparent")
+        self.hf_results_holder.pack(fill="x", padx=8, pady=(2, 8))
 
         lrow = ctk.CTkFrame(body, fg_color="transparent")
         lrow.pack(fill="x", padx=10, pady=(4, 0))
@@ -1792,6 +1990,44 @@ class App(ctk.CTk):
                          text_color="gray", font=ctk.CTkFont(size=11),
                          anchor="w", justify="left", wraplength=820).pack(
                 fill="x", padx=4)
+
+    def _search_hf(self):
+        if not models.huggingface_hub_available():
+            messagebox.showinfo(
+                about_info.APP_NAME,
+                "Search needs 'huggingface_hub' — install it in the Setup tab.")
+            return
+        query = self.hf_query.get().strip()
+        cat = self.import_category.get()
+        self._log(f"Searching Hugging Face for '{query}' ({cat})…")
+
+        def work():
+            try:
+                res = models.search_hf(query, cat, limit=15)
+                self.msg_queue.put(("hf_results", res))
+            except Exception as exc:  # noqa: BLE001
+                self.msg_queue.put(("log", f"Search failed: {exc}"))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _render_hf_results(self, results):
+        for ch in self.hf_results_holder.winfo_children():
+            ch.destroy()
+        if not results:
+            ctk.CTkLabel(self.hf_results_holder, text="No results.",
+                         text_color="gray").pack(anchor="w", padx=4)
+            return
+        for r in results[:15]:
+            row = ctk.CTkFrame(self.hf_results_holder, fg_color="transparent")
+            row.pack(fill="x", pady=1)
+            dl = r.get("downloads")
+            ctk.CTkLabel(row, text=f"{r['id']}",
+                         anchor="w").pack(side="left", padx=4)
+            ctk.CTkLabel(row, text=f"↓{dl}" if dl else "", text_color="gray",
+                         font=ctk.CTkFont(size=11)).pack(side="left", padx=4)
+            ctk.CTkButton(row, text="Import", width=70,
+                          command=lambda rid=r["id"]:
+                          (self.import_repo.set(rid), self._import_hf())).pack(
+                side="right", padx=4)
 
     def _import_hf(self):
         repo = self.import_repo.get().strip()
@@ -2028,6 +2264,7 @@ class App(ctk.CTk):
         self.ai_analysis_enabled.set(ai.get("enabled", False))
         self.ai_model.set(ai.get("model") or "img-blip-base")
         self.ai_user_model.set(ai.get("user_model", "") or "")
+        self.ai_user_instruction.set(ai.get("user_instruction", "") or "")
         self._refresh_ai_models()
         self.process_pages.set(mp.get("page_range", "all") or "all")
         self.keep_pages.set(mp.get("keep_pages", "all") or "all")
@@ -2087,7 +2324,8 @@ class App(ctk.CTk):
         mpf["image_ai_analysis"] = {
             "enabled": bool(self.ai_analysis_enabled.get()),
             "model": ai_map.get(self.ai_model.get(), self.ai_model.get()),
-            "user_model": ""}
+            "user_model": "",
+            "user_instruction": self.ai_user_instruction.get().strip()}
         mpf["page_range"] = self.process_pages.get().strip() or "all"
         mpf["keep_pages"] = self.keep_pages.get().strip() or "all"
         mpf["search_replace_text"] = self._gather_text_reps()
@@ -2401,6 +2639,12 @@ class App(ctk.CTk):
                         self._render_setup()
                     if hasattr(self, "import_local_holder"):
                         self._render_import_local()
+                elif kind == "conn_refresh":
+                    self._render_connections()
+                    self._refresh_ai_models()
+                    self._refresh_pw_models()
+                elif kind == "hf_results":
+                    self._render_hf_results(payload)
                 elif kind == "ipreview_start":
                     self._clear_insp_body()
                     if payload > self.PREVIEW_PAGE_CAP:

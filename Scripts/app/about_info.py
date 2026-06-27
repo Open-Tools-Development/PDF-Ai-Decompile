@@ -10,7 +10,7 @@ update.
 
 APP_NAME = "PDF Ai Decompile"
 TAGLINE = "Projects \u00b7 Modify PDF \u00b7 Decompile to LaTeX / Markdown"
-VERSION = "4.4"
+VERSION = "4.5"
 
 # --------------------------------------------------------------------------- #
 #  Authors  (single source of truth)                                          #
@@ -120,15 +120,25 @@ NOTES = [
     "tools are a local \"forgot my password\" helper. Brute force only "
     "succeeds against weak passwords; strong AES-256 passwords are infeasible "
     "to recover.",
-    "AI models are managed in the Models tab: download, test, add your own, or "
-    "import from Hugging Face, with hardware-aware recommendations. Downloads "
-    "need 'huggingface_hub'; image models need transformers/torch — without "
-    "them a heuristic description and the built-in password models are used.",
+    "AI models are managed in the Models tab: download, test, add your own, "
+    "search/import from Hugging Face, or connect to a local LLM server "
+    "(Ollama, LM Studio, …) or cloud platform (Claude, ChatGPT). The Setup "
+    "tab installs the optional dependencies. Without any model, a heuristic "
+    "description and the built-in password models are used.",
 ]
 
 # Revision history (newest first). Shown in the About dialog and documented in
 # Doc/SKILL.md.
 REVISION_HISTORY = [
+    ("4.5", "Fixed the dependency installer (it now streams the full pip log "
+            "and verifies each package actually imports; the packaged .exe "
+            "case is detected and explained). New LLM connections: connect to "
+            "local servers (Ollama, LM Studio, Jan, GPT4All, LocalAI, vLLM, "
+            "LMDeploy) and cloud platforms (Anthropic/Claude, OpenAI/ChatGPT) "
+            "with auto-detect and a connection test; a connected model appears "
+            "in the image/password dropdowns and runs with a fixed "
+            "per-category instruction plus an optional custom one. The Import "
+            "tab can now search Hugging Face in-tool."),
     ("4.4", "Files tab is now a resizable, scrollable table (with a full-path "
             "column, Protected & Restrictions). Modify PDF: a “Do nothing” "
             "option, restriction controls grey out when not applied, owner "

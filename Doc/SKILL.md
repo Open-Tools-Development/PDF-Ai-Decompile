@@ -9,7 +9,7 @@ description: >
   (3) convert a PDF into a full-text Markdown file with no images. The LaTeX and
   Markdown outputs are optimised for AI tools to read without processing the PDF.
   Use this document to understand the whole tool before modifying or extending it.
-version: "4.4"
+version: "4.5"
 authors:
   - Jerry James
   - Nisha Elizabeth
@@ -101,7 +101,8 @@ PDF-Ai-Decompile/
     │   ├─ pdf_modify.py         Advanced Modify pipeline (text/image/pages) (§13)
     │   ├─ passwords.py          Brute force + encrypted reuse pool (§13)
     │   ├─ models.py             AI-model framework: catalog/categories,
-    │   │                        download/import/register, hardware, self-test (§13)
+    │   │                        download/import/search, hardware, self-test (§13)
+    │   ├─ providers.py          LLM connections: local servers + cloud (§13.6b)
     │   ├─ runner.py             Headless project runner (resolve pw → jobs) (§13)
     │   ├─ pdf_common.py         Shared parser + text→LaTeX + image extraction
     │   ├─ pdf_remove.py         Image removal (UI: "Modify PDF")
@@ -564,12 +565,23 @@ local models. Elsewhere, model pickers use `models.available_models(category)` �
 dropdowns of what can actually run now; when a category has none, that AI option
 **disables itself with guidance** to the Models tab (no inline download/browse).
 
-**Still planned (item set after v4.4):** guided in-tool HF search by PC
-capability (item 10); **LLM** models with fixed per-category + optional user
-instructions (item 11); connecting to **local LLM servers** — Ollama, llama.cpp,
-Jan, GPT4All, LocalAI, vLLM, LMDeploy — with auto-detect + connection test (item
-12); and **cloud AI** providers — Claude, ChatGPT, … — with connection test
-(item 13). These form a provider layer to be built next.
+### 13.6c LLM connections (IMPLEMENTED — items 10, 11, 12, 13) — `backend/providers.py`
+- **Connections** sub-tab in the Models tab. **Local servers** (Ollama native +
+  any OpenAI-compatible: LM Studio, Jan, GPT4All, LocalAI, vLLM, LMDeploy) and
+  **cloud** (Anthropic/Claude — prefers the `anthropic` SDK, else raw HTTP;
+  OpenAI/ChatGPT). `autodetect_local()` probes common ports; `test_connection()`
+  / `list_models()` validate; `chat()` runs one prompt (vision via image blocks).
+  Configs (incl. API keys) are **encrypted** in the user folder (reuses the
+  password cipher).
+- A configured provider for a category appears in that category's dropdown as
+  `llm:<id>` (via `models.available_models`); `make_image_captioner` /
+  `make_password_generator` route `llm:` ids to the provider. **Two instruction
+  layers** (item 11): a fixed `CATEGORY_LLM_INSTRUCTIONS[category]` (task +
+  output format) plus an optional user instruction (stored in the project).
+- **Item 10**: `models.search_hf(query, category)` searches Hugging Face in-tool
+  (Import tab) and lets the user import a result.
+- Network calls need a running server / valid key; absent those, connection/test
+  fail gracefully and the heuristic/built-in fallbacks are used.
 
 ### 13.7 Dependencies
 Core stays the same (`PyMuPDF`, `customtkinter`, `Pillow`) — restrictions/
